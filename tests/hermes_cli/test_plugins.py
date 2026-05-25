@@ -1446,6 +1446,110 @@ class TestPluginDispatchTool:
         assert '"error"' in result
 
 
+class TestPluginContextWebSearchProvider:
+    """Tests for PluginContext.register_web_search_provider (bug #31918).
+
+    Verifies that PluginContext exposes the method and correctly routes
+    valid WebSearchProvider instances through to agent.web_search_registry.
+    This acts as a regression guard: the method was added after the initial
+    PluginContext surface, and gateway-startup stale-class bugs silently
+    surfaced as AttributeError on this exact call.
+    """
+
+    def _make_ctx(self, name: str = "test_web_plugin") -> tuple:
+        """Build a PluginContext + fresh PluginManager without triggering discovery."""
+        manager = PluginManager()
+        manager._discovered = True
+        manifest = PluginManifest(name=name)
+        ctx = PluginContext(manifest, manager)
+        return ctx, manager
+
+    def test_method_exists_on_plugin_context(self):
+        """register_web_search_provider must be present on every PluginContext instance.
+
+        Guards against the stale-class scenario described in bug #31918 where
+        a PluginContext from an older module load silently lacked this method.
+        """
+        ctx, _ = self._make_ctx()
+        assert hasattr(ctx, "register_web_search_provider"), (
+            "PluginContext is missing register_web_search_provider. "
+            "This indicates a stale PluginContext class — check that "
+            "hermes_cli.plugins is not imported under a secondary module name."
+        )
+        assert callable(ctx.register_web_search_provider)
+
+    def test_register_web_search_provider_stores_in_registry(self, monkeypatch):
+        """A valid WebSearchProvider is passed through to web_search_registry."""
+        from agent.web_search_provider import WebSearchProvider
+        from agent import web_search_registry as _wsr
+
+        # Isolate the registry from other tests.
+        monkeypatch.setattr(_wsr, "_providers", {})
+
+        class _FakeProvider(WebSearchProvider):
+            @property
+            def name(self) -> str:
+                return "fake-web"
+
+            def is_available(self) -> bool:
+                return True
+
+            def search(self, query: str, limit: int = 5):
+                return {"success": True, "data": {"web": []}}
+
+        provider = _FakeProvider()
+        ctx, _ = self._make_ctx("web-test-plugin")
+        ctx.register_web_search_provider(provider)
+
+        registered = _wsr.get_provider("fake-web")
+        assert registered is provider, (
+            "register_web_search_provider did not store the provider in "
+            "agent.web_search_registry"
+        )
+
+    def test_register_web_search_provider_rejects_non_provider(self, monkeypatch, caplog):
+        """Non-WebSearchProvider instances are rejected with a warning, not stored."""
+        from agent import web_search_registry as _wsr
+
+        # Isolate registry state so other tests' registered providers don't interfere.
+        monkeypatch.setattr(_wsr, "_providers", {})
+
+        ctx, _ = self._make_ctx("bad-plugin")
+
+        class _NotAProvider:
+            pass
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            ctx.register_web_search_provider(_NotAProvider())
+
+        # Registry must still be empty — nothing was accepted.
+        assert _wsr.list_providers() == [], (
+            "Non-WebSearchProvider was incorrectly accepted into the registry"
+        )
+        assert any(
+            "does not inherit from WebSearchProvider" in r.message
+            for r in caplog.records
+        ), "Expected a warning log for non-WebSearchProvider registration"
+
+    def test_ctx_class_comes_from_authoritative_module(self):
+        """PluginContext used in _load_plugin must be from hermes_cli.plugins.
+
+        Regression check for bug #31918: _load_plugin now resolves PluginContext
+        from sys.modules['hermes_cli.plugins'] at call time so gateway-startup
+        stale-class bugs are caught early rather than surfacing as AttributeError.
+        """
+        live_mod = sys.modules.get("hermes_cli.plugins")
+        assert live_mod is not None, "hermes_cli.plugins not in sys.modules"
+
+        live_cls = getattr(live_mod, "PluginContext", None)
+        assert live_cls is not None
+        assert hasattr(live_cls, "register_web_search_provider"), (
+            "sys.modules['hermes_cli.plugins'].PluginContext is missing "
+            "register_web_search_provider — this is the stale-class scenario "
+            "described in bug #31918."
+        )
+
+
 class TestPluginDebugLogging:
     """HERMES_PLUGINS_DEBUG opt-in stderr handler for plugin developers."""
 

@@ -1323,6 +1323,115 @@ class TestPrompt:
 
         assert resp.stop_reason == "cancelled"
 
+    @pytest.mark.asyncio
+    async def test_interrupt_sentinel_not_emitted_as_agent_message_chunk(self, agent):
+        """Bug #31658: interrupt sentinel must NOT be sent as agent_message_chunk.
+
+        When the conversation loop is cancelled while waiting for the model it
+        returns interrupted=True and a sentinel string like
+        "Operation interrupted: waiting for model response (3.3s elapsed).".
+        That string is a control signal — ACP clients must never see it as
+        assistant output.
+        """
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        sentinel = "Operation interrupted: waiting for model response (3.3s elapsed)."
+
+        def mock_run(*args, **kwargs):
+            state.cancel_event.set()
+            return {
+                "final_response": sentinel,
+                "interrupted": True,
+                "messages": [],
+            }
+
+        state.agent.run_conversation = mock_run
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        resp = await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="go")],
+            session_id=new_resp.session_id,
+        )
+
+        updates = [
+            call.kwargs.get("update") or call.args[1]
+            for call in mock_conn.session_update.call_args_list
+        ]
+        agent_chunks = [u for u in updates if u.session_update == "agent_message_chunk"]
+        sentinel_chunks = [c for c in agent_chunks if c.content.text == sentinel]
+
+        assert sentinel_chunks == [], (
+            "Interrupt sentinel must not be emitted as agent_message_chunk"
+        )
+        assert resp.stop_reason == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_interrupted_flag_without_cancel_event_yields_cancelled_stop_reason(self, agent):
+        """interrupted=True in the result dict is sufficient for stop_reason='cancelled'.
+
+        Some interrupt paths (e.g. signal-driven) set interrupted=True in the
+        return dict without going through cancel_event.  The stop_reason must
+        still be 'cancelled', not 'end_turn'.
+        """
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        def mock_run(*args, **kwargs):
+            # Do NOT set cancel_event — only the dict flag is set.
+            return {
+                "final_response": "Operation interrupted: handling API error (timeout: timed out).",
+                "interrupted": True,
+                "messages": [],
+            }
+
+        state.agent.run_conversation = mock_run
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        resp = await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="go")],
+            session_id=new_resp.session_id,
+        )
+
+        updates = [
+            call.kwargs.get("update") or call.args[1]
+            for call in mock_conn.session_update.call_args_list
+        ]
+        agent_chunks = [u for u in updates if u.session_update == "agent_message_chunk"]
+        assert agent_chunks == [], "No agent_message_chunk should be emitted on interrupt"
+        assert resp.stop_reason == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_auto_title_skipped_on_interrupt(self, agent):
+        """maybe_auto_title must not be called with the sentinel string."""
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        sentinel = "Operation interrupted: waiting for model response (3.3s elapsed)."
+        state.agent.run_conversation = MagicMock(return_value={
+            "final_response": sentinel,
+            "interrupted": True,
+            "messages": [],
+        })
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        with patch("agent.title_generator.maybe_auto_title") as mock_title:
+            await agent.prompt(
+                prompt=[TextContentBlock(type="text", text="go")],
+                session_id=new_resp.session_id,
+            )
+
+        mock_title.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # on_connect

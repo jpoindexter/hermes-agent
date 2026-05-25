@@ -116,17 +116,20 @@ def _strip_legitimate_emoji_zwj(prompt: str) -> str:
 
 def _scan_cron_prompt(prompt: str) -> str:
     """Scan a cron prompt for critical threats. Returns error string if blocked, else empty."""
-    github_auth_header = re.search(
+    # Replace ALL occurrences of the allowlisted GitHub auth-header shape so
+    # that prompts containing multiple distinct curl calls (different secret
+    # variable names, different endpoint paths) all get scrubbed before the
+    # exfil pattern checks run.  Using re.sub instead of re.search + str.replace
+    # fixes Bug #31570: re.search only found the first match, leaving subsequent
+    # matches in prompt_to_scan where they tripped the exfil_curl_auth_header
+    # pattern and incorrectly blocked legitimate multi-call prompts.
+    prompt_to_scan = re.sub(
         rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*token\s+{_CRON_SECRET_VAR_RE}["\']'
         r'\s+["\']?https://api\.github\.com(?:/|\b)',
+        "curl https://api.github.com/user",
         prompt,
-        re.IGNORECASE,
+        flags=re.IGNORECASE,
     )
-    prompt_to_scan = prompt
-    if github_auth_header:
-        # Allow the bundled GitHub skill fallback shape without opening a
-        # blanket exemption for arbitrary Authorization-header exfiltration.
-        prompt_to_scan = prompt.replace(github_auth_header.group(0), "curl https://api.github.com/user")
     prompt_for_invisible_scan = _strip_legitimate_emoji_zwj(prompt_to_scan)
     for char in _CRON_INVISIBLE_CHARS:
         if char in prompt_for_invisible_scan:

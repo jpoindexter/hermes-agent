@@ -461,6 +461,37 @@ class TestParseHooksBlock:
         })
         assert specs == []
 
+    def test_unknown_event_warns_with_name(self, caplog):
+        """Invalid event names (including gateway-only names like 'agent:end')
+        must emit a logger.warning so users can debug why their hook never fires.
+        """
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger=shell_hooks.logger.name):
+            specs = shell_hooks._parse_hooks_block({
+                "agent:end": [{"command": "/tmp/hook.sh"}],
+            })
+
+        assert specs == []
+        warning_messages = [r.getMessage() for r in caplog.records]
+        assert any(
+            "agent:end" in msg for msg in warning_messages
+        ), f"Expected warning mentioning 'agent:end'; got: {warning_messages}"
+
+    def test_unknown_event_suggests_close_match(self, caplog):
+        """A typo close to a valid event should surface a 'did you mean' hint."""
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger=shell_hooks.logger.name):
+            shell_hooks._parse_hooks_block({
+                "pre_tools_call": [{"command": "/tmp/hook.sh"}],
+            })
+
+        warning_messages = [r.getMessage() for r in caplog.records]
+        assert any(
+            "did you mean" in msg for msg in warning_messages
+        ), f"Expected 'did you mean' hint; got: {warning_messages}"
+
     def test_missing_command_skipped(self):
         specs = shell_hooks._parse_hooks_block({
             "pre_tool_call": [{"matcher": "terminal"}],

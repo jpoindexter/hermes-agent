@@ -1513,7 +1513,8 @@ class HermesACPAgent(acp.Agent):
             self.session_manager.save_session(session_id)
 
         final_response = result.get("final_response", "")
-        if final_response:
+        turn_interrupted = bool(result.get("interrupted"))
+        if final_response and not turn_interrupted:
             try:
                 from agent.title_generator import maybe_auto_title
 
@@ -1534,7 +1535,10 @@ class HermesACPAgent(acp.Agent):
                 )
             except Exception:
                 logger.debug("Failed to auto-title ACP session %s", session_id, exc_info=True)
-        if final_response and conn and not streamed_message:
+        # Do not emit the interrupt sentinel string as assistant content.
+        # When the turn was interrupted the cancellation is communicated via
+        # stop_reason="cancelled" in the PromptResponse, not as a message chunk.
+        if final_response and conn and not streamed_message and not turn_interrupted:
             update = acp.update_agent_message_text(final_response)
             await conn.session_update(session_id, update)
 
@@ -1572,7 +1576,11 @@ class HermesACPAgent(acp.Agent):
 
         await self._send_usage_update(state)
 
-        stop_reason = "cancelled" if state.cancel_event and state.cancel_event.is_set() else "end_turn"
+        stop_reason = (
+            "cancelled"
+            if (state.cancel_event and state.cancel_event.is_set()) or turn_interrupted
+            else "end_turn"
+        )
         return PromptResponse(stop_reason=stop_reason, usage=usage)
 
     # ---- Slash commands (headless) -------------------------------------------

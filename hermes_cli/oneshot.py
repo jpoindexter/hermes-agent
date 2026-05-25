@@ -122,11 +122,39 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
     return valid, None
 
 
+def _parse_skills_argument(skills: "str | list | tuple | None") -> list:
+    """Normalize the --skills flag value into a deduplicated list of skill names.
+
+    Mirrors ``cli._parse_skills_argument`` without importing from cli so that
+    oneshot stays import-cheap at startup.
+    """
+    if not skills:
+        return []
+    if isinstance(skills, str):
+        raw_values = [skills]
+    elif isinstance(skills, (list, tuple)):
+        raw_values = [str(item) for item in skills if item is not None]
+    else:
+        raw_values = [str(skills)]
+
+    parsed: list = []
+    seen: set = set()
+    for raw in raw_values:
+        for part in raw.split(","):
+            normalized = part.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            parsed.append(normalized)
+    return parsed
+
+
 def run_oneshot(
     prompt: str,
     model: Optional[str] = None,
     provider: Optional[str] = None,
     toolsets: object = None,
+    skills: "str | list | None" = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -137,6 +165,8 @@ def run_oneshot(
         provider: Optional provider override. Falls back to config.yaml's
             model.provider, then "auto".
         toolsets: Optional comma-separated string or iterable of toolsets.
+        skills: Optional skill name(s) to preload — same semantics as the
+            ``--skills`` / ``-s`` CLI flag (comma-separated string or list).
 
     Returns the exit code.  Caller should sys.exit() with the return.
     """
@@ -166,6 +196,28 @@ def run_oneshot(
         return 2
     use_config_toolsets = _normalize_toolsets(toolsets) is None
 
+    # Resolve skills BEFORE the devnull redirect so error messages reach the
+    # terminal.  Mirrors how HermesCLI.system_prompt receives skills in the
+    # interactive path (cli.py:14561-14573), using ephemeral_system_prompt so
+    # the skill content is injected at API-call time without polluting the
+    # cached/stored system prompt.
+    parsed_skills = _parse_skills_argument(skills)
+    skills_prompt: Optional[str] = None
+    if parsed_skills:
+        try:
+            from agent.skill_commands import build_preloaded_skills_prompt
+        except Exception as exc:
+            sys.stderr.write(f"hermes -z: failed to load skill_commands: {exc}\n")
+            return 2
+        _skill_prompt, _loaded, _missing = build_preloaded_skills_prompt(parsed_skills)
+        if _missing:
+            sys.stderr.write(
+                f"hermes -z: unknown skill(s): {', '.join(_missing)}\n"
+            )
+            return 2
+        if _skill_prompt:
+            skills_prompt = _skill_prompt
+
     # Auto-approve any shell / tool approvals.  Non-interactive by
     # definition — a prompt would hang forever.
     os.environ["HERMES_YOLO_MODE"] = "1"
@@ -184,6 +236,7 @@ def run_oneshot(
                 provider=provider,
                 toolsets=explicit_toolsets,
                 use_config_toolsets=use_config_toolsets,
+                skills_prompt=skills_prompt,
             )
     finally:
         try:
@@ -221,6 +274,7 @@ def _run_agent(
     provider: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
+    skills_prompt: Optional[str] = None,
 ) -> str:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns the final response string."""
@@ -317,6 +371,11 @@ def _run_agent(
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
         fallback_model=_fb or None,
+        # Skills are injected via ephemeral_system_prompt so they are
+        # appended at API-call time (conversation_loop.py:849-850) without
+        # polluting the cached/stored system prompt — the same mechanism
+        # HermesCLI uses (cli.py:4822).
+        ephemeral_system_prompt=skills_prompt if skills_prompt else None,
         # Interactive callbacks are intentionally NOT wired beyond this
         # one.  In oneshot mode there's no user sitting at a terminal:
         #   - clarify  → returns a synthetic "pick a default" instruction

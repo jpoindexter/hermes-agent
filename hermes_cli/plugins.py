@@ -1303,7 +1303,19 @@ class PluginManager:
                 loaded.error = "no register() function"
                 logger.warning("Plugin '%s' has no register() function", manifest.name)
             else:
-                ctx = PluginContext(manifest, self)
+                # Resolve PluginContext from the authoritative sys.modules
+                # entry at call time.  If hermes_cli/plugins.py was imported
+                # under a secondary module name (e.g. by a stale editable
+                # install or a forked gateway process), the module-level name
+                # could refer to an older class that predates methods like
+                # register_web_search_provider.  Pulling from sys.modules
+                # ensures the plugin always receives the live, fully-defined
+                # PluginContext, matching bug #31918.
+                _live_mod = sys.modules.get("hermes_cli.plugins")
+                _PluginContext = (
+                    getattr(_live_mod, "PluginContext", None) or PluginContext
+                )
+                ctx = _PluginContext(manifest, self)
                 register_fn(ctx)
                 loaded.tools_registered = [
                     t for t in self._plugin_tool_names
