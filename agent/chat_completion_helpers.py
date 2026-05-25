@@ -581,9 +581,14 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     if isinstance(_san_content, str) and _san_content:
         _san_content = agent._strip_think_blocks(_san_content).strip()
 
+    # Strict OpenAI-compat upstreams (and some Anthropic-compat shims) reject
+    # replayed history where an assistant turn has content="" with tool_calls.
+    # Use None so the field is null rather than an empty string — all
+    # spec-compliant parsers accept null, none accept "" for text blocks. (#31583)
+    _stored_content = _san_content if (_san_content or not assistant_tool_calls) else None
     msg = {
         "role": "assistant",
-        "content": _san_content,
+        "content": _stored_content,
         "reasoning": reasoning_text,
         "finish_reason": finish_reason,
     }

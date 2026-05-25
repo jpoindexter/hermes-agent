@@ -1173,6 +1173,13 @@ class AIAgent:
 
         Ensures conversations are never lost, even on errors or early returns.
         """
+        # Flush BEFORE scaffolding removal so messages added after the last
+        # intermediate flush (e.g. tool results from a failed empty-response
+        # attempt) are written before _drop_trailing pops them. Synthetic
+        # scaffolding markers are filtered inside _flush_messages_to_session_db.
+        # A second flush after the drop syncs _last_flushed_db_idx to the
+        # cleaned list length (no-op write, pointer update only). (#31507)
+        self._flush_messages_to_session_db(messages, conversation_history)
         self._drop_trailing_empty_response_scaffolding(messages)
         self._apply_persist_user_message_override(messages)
         self._session_messages = messages
@@ -1253,7 +1260,23 @@ class AIAgent:
                 self._ensure_db_session()
             start_idx = len(conversation_history) if conversation_history else 0
             flush_from = max(start_idx, self._last_flushed_db_idx)
+            # Guard: _drop_trailing_empty_response_scaffolding can shrink
+            # messages below _last_flushed_db_idx. Clamp so the pointer stays
+            # valid; the next flush will write from the correct position. (#31507)
+            if flush_from > len(messages):
+                flush_from = len(messages)
             for msg in messages[flush_from:]:
+                # Skip internal scaffolding markers — they are control signals
+                # for the empty-response recovery loop, not conversation record.
+                # _empty_recovery_synthetic: nudge placeholder + user prompt.
+                # _empty_terminal_sentinel: the "(empty)" dead-end sentinel
+                # (the comment in conversation_loop.py explains why persisting
+                # it causes stuck loops on session resume). (#31507)
+                if isinstance(msg, dict) and (
+                    msg.get("_empty_recovery_synthetic")
+                    or msg.get("_empty_terminal_sentinel")
+                ):
+                    continue
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
                 # Persist multimodal tool results as their text summary only —

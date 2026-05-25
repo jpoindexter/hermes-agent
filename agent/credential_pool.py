@@ -37,12 +37,28 @@ from hermes_cli.auth import (
 logger = logging.getLogger(__name__)
 
 
+_config_safe_cache: Optional[dict] = None
+_config_safe_cache_ts: float = 0.0
+_CONFIG_SAFE_TTL: float = 5.0  # seconds — config doesn't change mid-picker (#31556)
+
+
 def _load_config_safe() -> Optional[dict]:
-    """Load config.yaml, returning None on any error."""
+    """Load config.yaml, returning None on any error.
+
+    Results are cached for _CONFIG_SAFE_TTL seconds so repeated calls within a
+    single /model picker invocation (up to 69×) parse the YAML only once. (#31556)
+    """
+    global _config_safe_cache, _config_safe_cache_ts
+    import time
+    now = time.monotonic()
+    if _config_safe_cache is not None and (now - _config_safe_cache_ts) < _CONFIG_SAFE_TTL:
+        return _config_safe_cache
     try:
         from hermes_cli.config import load_config
-
-        return load_config()
+        result = load_config()
+        _config_safe_cache = result
+        _config_safe_cache_ts = now
+        return result
     except Exception:
         return None
 
