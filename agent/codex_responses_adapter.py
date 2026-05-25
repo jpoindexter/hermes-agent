@@ -202,6 +202,14 @@ def _derive_responses_function_call_id(
 # Schema conversion
 # ---------------------------------------------------------------------------
 
+_RESPONSES_NAME_RE = re.compile(r"[^A-Za-z0-9_-]")
+
+
+def _sanitize_responses_name(name: str) -> str:
+    """Strip chars not in ^[a-zA-Z0-9_-]+ required by the Responses API."""
+    return _RESPONSES_NAME_RE.sub("", name)
+
+
 def _responses_tools(tools: Optional[List[Dict[str, Any]]] = None) -> Optional[List[Dict[str, Any]]]:
     """Convert chat-completions tool schemas to Responses function-tool schemas."""
     if not tools:
@@ -215,7 +223,7 @@ def _responses_tools(tools: Optional[List[Dict[str, Any]]] = None) -> Optional[L
             continue
         converted.append({
             "type": "function",
-            "name": name,
+            "name": _sanitize_responses_name(name),
             "description": fn.get("description", ""),
             "strict": False,
             "parameters": fn.get("parameters", {"type": "object", "properties": {}}),
@@ -491,7 +499,7 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                 {
                     "type": "function_call",
                     "call_id": call_id.strip(),
-                    "name": name.strip(),
+                    "name": _sanitize_responses_name(name.strip()),
                     "arguments": arguments,
                 }
             )
@@ -730,7 +738,7 @@ def _preflight_codex_api_kwargs(
             normalized_tools.append(
                 {
                     "type": "function",
-                    "name": name.strip(),
+                    "name": _sanitize_responses_name(name.strip()),
                     "description": description,
                     "strict": strict,
                     "parameters": parameters,

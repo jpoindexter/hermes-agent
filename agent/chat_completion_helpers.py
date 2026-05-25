@@ -1664,8 +1664,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # Per-attempt diagnostic dict for the retry block to consume.
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
+        # Guard: strip Responses-API-only keys that don't exist on the
+        # Anthropic SDK's messages.stream() signature. These can leak via
+        # state mutation after a Codex aux call (#31673).
+        _RESPONSES_ONLY = {"instructions", "input", "store", "previous_response_id"}
+        _anthropic_kwargs = {k: v for k, v in api_kwargs.items() if k not in _RESPONSES_ONLY}
         # Use the Anthropic SDK's streaming context manager
-        with agent._anthropic_client.messages.stream(**api_kwargs) as stream:
+        with agent._anthropic_client.messages.stream(**_anthropic_kwargs) as stream:
             # The Anthropic SDK exposes the raw httpx response on
             # ``stream.response``.  Snapshot diagnostic headers
             # immediately so they survive a stream that dies before the

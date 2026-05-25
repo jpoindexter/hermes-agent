@@ -1366,6 +1366,15 @@ async def web_crawl_tool(
 # Convenience function to check Firecrawl credentials
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
+    # Plugin-registered providers (e.g. Kagi, custom backends) take precedence
+    # over the hardcoded built-in list so third-party plugins aren't silently
+    # disabled when none of the built-in env vars are set.
+    try:
+        from agent.web_search_registry import list_providers
+        if any(p.is_available() for p in list_providers()):
+            return True
+    except Exception:
+        pass
     configured = _load_web_config().get("backend", "").lower().strip()
     if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs"}:
         return _is_backend_available(configured)
