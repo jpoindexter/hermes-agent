@@ -459,6 +459,8 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
     try:
         with os.fdopen(fd, "w", encoding=encoding) as f:
             f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
         atomic_replace(temp_path, file_path)
     except Exception:
         # Clean up temp file on error

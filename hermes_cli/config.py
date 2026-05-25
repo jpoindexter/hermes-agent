@@ -803,6 +803,8 @@ DEFAULT_CONFIG = {
                                       # 0 for long-running rolling-compaction sessions
                                       # where you want nothing pinned except the
                                       # system prompt + rolling summary + recent tail.
+        "minimum_context_floor": 64_000,    # Minimum context window (tokens) to accept a model.
+                                      # Lower this to allow small local models (e.g. 8K).
         "abort_on_summary_failure": False,  # When True, auto-compression that fails
                                       # to generate a summary (aux LLM errored / returned
                                       # non-JSON / timed out) aborts entirely instead of

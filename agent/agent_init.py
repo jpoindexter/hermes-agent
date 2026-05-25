@@ -1450,16 +1450,19 @@ def init_agent(
     agent.compression_enabled = compression_enabled
 
     # Reject models whose context window is below the minimum required
-    # for reliable tool-calling workflows (64K tokens).
+    # for reliable tool-calling workflows (64K tokens by default).
+    # Override via compression.minimum_context_floor in config.yaml.
     from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
     _ctx = getattr(agent.context_compressor, "context_length", 0)
-    if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH:
+    _min_ctx = int(_compression_cfg.get("minimum_context_floor", MINIMUM_CONTEXT_LENGTH))
+    if _ctx and _ctx < _min_ctx:
         raise ValueError(
             f"Model {agent.model} has a context window of {_ctx:,} tokens, "
-            f"which is below the minimum {MINIMUM_CONTEXT_LENGTH:,} required "
+            f"which is below the minimum {_min_ctx:,} required "
             f"by Hermes Agent.  Choose a model with at least "
-            f"{MINIMUM_CONTEXT_LENGTH // 1000}K context, or set "
-            f"model.context_length in config.yaml to override."
+            f"{_min_ctx // 1000}K context, set model.context_length in "
+            f"config.yaml to override the detected window, or lower "
+            f"compression.minimum_context_floor to accept smaller models."
         )
 
     # Inject context engine tool schemas (e.g. lcm_grep, lcm_describe, lcm_expand).

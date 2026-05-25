@@ -67,6 +67,13 @@ class TestReadFileHandler:
         assert "error" in result
         assert "terminal not available" in result["error"]
 
+    def test_empty_path_returns_error(self):
+        from tools.file_tools import read_file_tool
+        for bad in ("", "   ", "\t"):
+            result = json.loads(read_file_tool(bad))
+            assert "error" in result
+            assert "empty" in result["error"]
+
 
 class TestWriteFileHandler:
     @patch("tools.file_tools._get_file_ops")
