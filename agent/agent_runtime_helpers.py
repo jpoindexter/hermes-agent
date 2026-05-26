@@ -470,6 +470,11 @@ def strip_think_blocks(agent, content: str) -> str:
     """
     if not content:
         return ""
+    # Fast-path: if there are no angle-brackets at all, there are no tags to
+    # strip.  Skip all the regex passes to avoid holding the GIL on large
+    # Codex/streaming responses that contain no reasoning markers (#32079).
+    if "<" not in content:
+        return content
     # 1. Closed tag pairs — case-insensitive for all variants so
     #    mixed-case tags (<THINK>, <Thinking>) don't slip through to
     #    the unterminated-tag pass and take trailing content with them.

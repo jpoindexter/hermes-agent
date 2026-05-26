@@ -163,6 +163,14 @@ def atomic_yaml_write(
 
     original_mode = _preserve_file_mode(path)
 
+    # WARNING: There are TWO YAML write paths in this codebase:
+    #   1. atomic_yaml_write() — uses PyYAML (yaml.dump), indent=2, no comment preservation
+    #   2. atomic_roundtrip_yaml_update() — uses ruamel.yaml, sequence=4/offset=2, preserves comments
+    # These produce different indentation for sequences. Do NOT mix outputs from both paths in
+    # the same config.yaml section — js-yaml will throw "bad indentation of a mapping entry".
+    # (Bug #31999). If you add a new write path, use one of these two functions; do not call
+    # yaml.dump / yaml.safe_dump directly.
+
     fd, tmp_path = tempfile.mkstemp(
         dir=str(path.parent),
         prefix=f".{path.stem}_",
@@ -170,11 +178,27 @@ def atomic_yaml_write(
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, default_flow_style=default_flow_style, sort_keys=sort_keys)
+            yaml.dump(
+                data,
+                f,
+                default_flow_style=default_flow_style,
+                sort_keys=sort_keys,
+                indent=2,
+            )
             if extra_content:
                 f.write(extra_content)
             f.flush()
             os.fsync(f.fileno())
+        # Validate the temp file BEFORE replacing the original — if the output
+        # is malformed YAML (e.g. invalid extra_content), unlink the temp and
+        # raise so the original file is never touched.
+        with open(tmp_path, "r", encoding="utf-8") as _f:
+            try:
+                yaml.safe_load(_f)
+            except yaml.YAMLError as exc:
+                raise ValueError(
+                    f"atomic_yaml_write produced invalid YAML for {path}: {exc}"
+                ) from exc
         # Preserve symlinks — swap in-place on the real file (GitHub #16743).
         real_path = atomic_replace(tmp_path, path)
         _restore_file_mode(real_path, original_mode)

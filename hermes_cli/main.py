@@ -186,13 +186,42 @@ def _apply_profile_override() -> None:
     profile_name = None
     consume = 0
 
+    # Detect commands where --profile is a job-level option, NOT a global
+    # HERMES_HOME switch.  For "hermes cron create/add/edit --profile <name>"
+    # the flag targets the job record (stored in the root jobs.json) and must
+    # not redirect the entire process to that profile's home directory.
+    # We identify this by checking whether 'cron' appears before the
+    # --profile flag and is followed by a mutating subcommand.
+    _CRON_MUTATING_SUBCMDS = {"create", "add", "edit"}
+
+    def _is_cron_job_profile_flag(flag_index: int) -> bool:
+        """Return True when --profile at flag_index is a cron job-level flag."""
+        cron_idx = None
+        for j, a in enumerate(argv):
+            if a == "cron":
+                cron_idx = j
+                break
+        if cron_idx is None or cron_idx >= flag_index:
+            return False
+        # The first non-option token after 'cron' is the subcommand.
+        for a in argv[cron_idx + 1 : flag_index]:
+            if not a.startswith("-"):
+                return a in _CRON_MUTATING_SUBCMDS
+        return False
+
     # 1. Check for explicit -p / --profile flag
     for i, arg in enumerate(argv):
         if arg in {"--profile", "-p"} and i + 1 < len(argv):
+            if _is_cron_job_profile_flag(i):
+                # Leave --profile in sys.argv for argparse to handle as a
+                # job-level option; do NOT switch HERMES_HOME.
+                return
             profile_name = argv[i + 1]
             consume = 2
             break
         elif arg.startswith("--profile="):
+            if _is_cron_job_profile_flag(i):
+                return
             profile_name = arg.split("=", 1)[1]
             consume = 1
             break

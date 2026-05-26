@@ -139,3 +139,96 @@ class TestApplyProfileOverrideHermesHomeGuard:
         _apply_profile_override()
 
         assert os.environ.get("HERMES_HOME") is None
+
+
+class TestCronCreateEditProfileFlag:
+    """Bug #32046 / #32045 — cron create/edit --profile must NOT redirect HERMES_HOME.
+
+    The --profile flag on 'hermes cron create/edit' is a job-level option that
+    sets the profile field on the job record.  It must not cause _apply_profile_override
+    to switch the process's HERMES_HOME, which would write the job to the profile's
+    cron directory instead of the root jobs.json.
+    """
+
+    def _run(self, tmp_path, monkeypatch, argv: list[str]) -> str | None:
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+        profile_dir = hermes_root / "profiles" / "support"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(sys, "argv", argv)
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        return os.environ.get("HERMES_HOME")
+
+    def test_cron_create_profile_does_not_redirect_hermes_home(
+        self, tmp_path, monkeypatch
+    ):
+        result = self._run(
+            tmp_path,
+            monkeypatch,
+            argv=["hermes", "cron", "create", "--prompt", "hi", "--schedule", "daily", "--profile", "support"],
+        )
+        assert result is None, (
+            f"cron create --profile must not switch HERMES_HOME; got {result!r}"
+        )
+
+    def test_cron_add_profile_does_not_redirect_hermes_home(
+        self, tmp_path, monkeypatch
+    ):
+        result = self._run(
+            tmp_path,
+            monkeypatch,
+            argv=["hermes", "cron", "add", "--prompt", "hi", "--schedule", "daily", "--profile", "support"],
+        )
+        assert result is None, (
+            f"cron add --profile must not switch HERMES_HOME; got {result!r}"
+        )
+
+    def test_cron_edit_profile_does_not_redirect_hermes_home(
+        self, tmp_path, monkeypatch
+    ):
+        result = self._run(
+            tmp_path,
+            monkeypatch,
+            argv=["hermes", "cron", "edit", "abc123", "--profile", "support"],
+        )
+        assert result is None, (
+            f"cron edit --profile must not switch HERMES_HOME; got {result!r}"
+        )
+
+    def test_top_level_profile_flag_still_redirects_hermes_home(
+        self, tmp_path, monkeypatch
+    ):
+        """Sanity check: hermes --profile support cron list should still redirect."""
+        result = self._run(
+            tmp_path,
+            monkeypatch,
+            argv=["hermes", "--profile", "support", "cron", "list"],
+        )
+        assert result is not None and "support" in result, (
+            f"Top-level --profile must still redirect HERMES_HOME; got {result!r}"
+        )
+
+    def test_cron_create_with_profile_flag_profile_name_left_in_argv(
+        self, tmp_path, monkeypatch
+    ):
+        """After _apply_profile_override runs, --profile <name> must remain in sys.argv
+        so argparse can pick it up as the job's profile field."""
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+        (hermes_root / "profiles" / "support").mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        argv_orig = ["hermes", "cron", "create", "--prompt", "hi", "--schedule", "daily", "--profile", "support"]
+        monkeypatch.setattr(sys, "argv", list(argv_orig))
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        assert "--profile" in sys.argv, "--profile must remain in sys.argv for argparse"
+        assert "support" in sys.argv, "profile name must remain in sys.argv for argparse"

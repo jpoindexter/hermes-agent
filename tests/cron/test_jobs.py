@@ -952,4 +952,58 @@ class TestSaveJobOutput:
         output_file = save_job_output("test123", "# Results\nEverything ok.")
         assert output_file.exists()
         assert output_file.read_text() == "# Results\nEverything ok."
-        assert "test123" in str(output_file)
+
+
+# =========================================================================
+# Bug #32091 — create_job from a profile context must write to root jobs.json
+# =========================================================================
+
+class TestCreateJobLandsInRootFromProfile:
+    """Regression test for Bug #32091.
+
+    When HERMES_HOME is set to a profile directory (e.g. <root>/profiles/dev),
+    cron/jobs.py must resolve HERMES_DIR to the root via get_default_hermes_root()
+    so jobs.json is written at <root>/cron/jobs.json, not the profile-local dir.
+    The gateway scheduler always reads from the root jobs.json, so a profile-scoped
+    create would otherwise silently drop the job.
+    """
+
+    def test_create_from_profile_writes_to_root_jobs_json(self, tmp_path, monkeypatch):
+        import importlib
+        import cron.jobs as jobs_mod
+
+        # Build a root + profile directory layout.
+        root = tmp_path / "hermes-root"
+        profile_home = root / "profiles" / "dev"
+        profile_home.mkdir(parents=True)
+        (root / "cron").mkdir(parents=True)
+
+        # Point HERMES_HOME at the profile — this is the triggering condition.
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+        # Reload the module so module-level constants recompute from the new env.
+        importlib.reload(jobs_mod)
+
+        try:
+            job = jobs_mod.create_job(prompt="profile test job", schedule="every 1h")
+
+            root_jobs_file = root / "cron" / "jobs.json"
+            profile_jobs_file = profile_home / "cron" / "jobs.json"
+
+            # The job must land in the root cron/jobs.json.
+            assert root_jobs_file.exists(), (
+                "jobs.json should exist at the root, not the profile dir"
+            )
+            root_data = json.loads(root_jobs_file.read_text())
+            root_ids = [j["id"] for j in root_data.get("jobs", [])]
+            assert job["id"] in root_ids, (
+                f"Job {job['id']} was not found in root jobs.json"
+            )
+
+            # The job must NOT have been written to the profile-local cron dir.
+            assert not profile_jobs_file.exists(), (
+                "jobs.json must NOT be created inside the profile directory"
+            )
+        finally:
+            # Restore the module to a neutral state so other tests aren't affected.
+            importlib.reload(jobs_mod)

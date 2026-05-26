@@ -111,3 +111,31 @@ class TestPostDeliveryCallbackChaining:
     def test_non_callable_is_noop(self, adapter):
         adapter.register_post_delivery_callback("s", "not-callable")  # type: ignore[arg-type]
         assert adapter._post_delivery_callbacks == {}
+
+    # ── Bug #31922 regression tests ─────────────────────────────────────────
+    # Register with generation=None, pop with generation=<int> must return the
+    # callback (generation=None means "match any generation").
+
+    def test_no_generation_register_pop_with_generation(self, adapter):
+        """Callback registered without a generation is returned for any pop generation."""
+        fired = []
+        adapter.register_post_delivery_callback("s", lambda: fired.append("goal"))
+        cb = adapter.pop_post_delivery_callback("s", generation=5)
+        assert cb is not None, "callback should not be silently dropped"
+        cb()
+        assert fired == ["goal"]
+
+    def test_pinned_generation_matches_exact(self, adapter):
+        """Callback registered with generation=3 is returned only for pop generation=3."""
+        fired = []
+        adapter.register_post_delivery_callback("s", lambda: fired.append("g3"), generation=3)
+        cb = adapter.pop_post_delivery_callback("s", generation=3)
+        assert cb is not None
+        cb()
+        assert fired == ["g3"]
+
+    def test_pinned_generation_mismatch_not_returned(self, adapter):
+        """Callback registered with generation=3 is NOT returned for pop generation=5."""
+        adapter.register_post_delivery_callback("s", lambda: None, generation=3)
+        cb = adapter.pop_post_delivery_callback("s", generation=5)
+        assert cb is None

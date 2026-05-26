@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -1120,6 +1121,20 @@ def _resolve_explicit_runtime(
         # access_token fallback is handled by resolve_nous_runtime_credentials().
         api_key = explicit_api_key or str(state.get("agent_key") or "").strip()
         expires_at = state.get("agent_key_expires_at") or state.get("expires_at")
+        # Check expiry before using the cached key — same gate as the main
+        # credential path (lines below the pool block).  An expired key here
+        # causes HTTP 401 for sub-agents using delegation.provider=nous.
+        if api_key and not explicit_api_key:
+            expires_raw = state.get("agent_key_expires_at") or state.get("expires_at")
+            min_ttl = max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800")))
+            if isinstance(expires_raw, (int, float)):
+                expires_epoch: Optional[float] = float(expires_raw)
+            elif isinstance(expires_raw, str):
+                expires_epoch = auth_mod._parse_iso_timestamp(expires_raw)
+            else:
+                expires_epoch = None
+            if expires_epoch is None or (expires_epoch - time.time()) < min_ttl:
+                api_key = ""  # force refresh below
         if not api_key:
             creds = resolve_nous_runtime_credentials(
                 min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),

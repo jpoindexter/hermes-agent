@@ -2159,8 +2159,8 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     # SIGKILL on the cgroup — otherwise bash/sleep tool-call children left
     # by a force-interrupted agent get reaped by systemd instead of us
     # (#8202). 30s of headroom covers the worst case we've observed.
-    _drain_timeout = int(_get_restart_drain_timeout() or 0)
-    restart_timeout = max(60, _drain_timeout) + 30
+    _drain_timeout = int(_get_restart_drain_timeout() or DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT)
+    restart_timeout = _drain_timeout + 30
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)

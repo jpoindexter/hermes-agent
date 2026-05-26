@@ -2366,3 +2366,32 @@ class TestPtyWebSocket:
             ):
                 pass
         assert exc.value.code == 4400
+
+
+# ---------------------------------------------------------------------------
+# Bug #31925 — approvals.mode must use canonical option names
+# ---------------------------------------------------------------------------
+
+
+class TestApprovalsModeSchemaBug31925:
+    """CONFIG_SCHEMA for approvals.mode must list the canonical values."""
+
+    def test_approvals_mode_options_are_correct(self):
+        from hermes_cli.web_server import CONFIG_SCHEMA
+
+        entry = CONFIG_SCHEMA.get("approvals.mode")
+        assert entry is not None, "approvals.mode not found in CONFIG_SCHEMA"
+        assert entry.get("type") == "select"
+        options = entry.get("options", [])
+        assert set(options) == {"manual", "smart", "off"}, (
+            f"Expected {{'manual', 'smart', 'off'}}, got {set(options)}"
+        )
+
+    def test_approvals_mode_does_not_contain_legacy_values(self):
+        from hermes_cli.web_server import CONFIG_SCHEMA
+
+        options = CONFIG_SCHEMA.get("approvals.mode", {}).get("options", [])
+        for legacy in ("ask", "yolo", "deny"):
+            assert legacy not in options, (
+                f"Legacy option '{legacy}' still present in approvals.mode options"
+            )

@@ -312,8 +312,19 @@ class TestRequireServiceInstalled:
 
 class TestGeneratedSystemdUnits:
     def _expected_timeout_stop_sec(self) -> str:
-        timeout = int(max(60, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT) + 30)
+        timeout = int(DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT + 30)
         return f"TimeoutStopSec={timeout}"
+
+    def test_timeout_stop_sec_falls_back_to_default_when_drain_is_zero(self, monkeypatch):
+        """Bug #31981 — when _get_restart_drain_timeout() returns 0 (config
+        parse failure), TimeoutStopSec must use DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+        + 30 instead of the old max(60, 0) + 30 = 90 formula."""
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 0)
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        expected_min = int(DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT + 30)
+        assert f"TimeoutStopSec={expected_min}" in unit, (
+            f"Expected TimeoutStopSec={expected_min} (drain_default+30), not 90"
+        )
 
     def test_user_unit_avoids_recursive_execstop_and_uses_extended_stop_timeout(self, monkeypatch):
         monkeypatch.setattr(
@@ -393,6 +404,24 @@ class TestGeneratedSystemdUnits:
         # (tool subprocess kill, adapter disconnect) runs — issue #8202.
         assert self._expected_timeout_stop_sec() in unit
         assert "WantedBy=multi-user.target" in unit
+
+
+class TestStaleSysmdUnitWarningMessage:
+    """Bug #31981 — the stale-unit warning must cite the correct command."""
+
+    def test_warning_says_gateway_install_force_not_service_install_replace(self):
+        """gateway/run.py's stale-unit warning must use 'hermes gateway install --force'
+        (the real command) and not the defunct 'hermes gateway service install --replace'."""
+        import inspect
+        import gateway.run as gateway_run
+
+        src = inspect.getsource(gateway_run)
+        assert "hermes gateway install --force" in src, (
+            "Stale-unit warning must cite 'hermes gateway install --force'"
+        )
+        assert "hermes gateway service install --replace" not in src, (
+            "Stale-unit warning must not cite defunct 'hermes gateway service install --replace'"
+        )
 
 
 class TestGatewayStopCleanup:

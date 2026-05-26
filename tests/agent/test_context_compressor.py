@@ -1942,3 +1942,137 @@ class TestTruncateToolCallArgsJson:
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
         assert parsed["content"].endswith("...[truncated]")
+
+
+# ---------------------------------------------------------------------------
+# Bug #32106 — skill_view pruning must emit [SKILL_PRUNED] marker
+# ---------------------------------------------------------------------------
+
+
+class TestSkillViewPruningMarkerBug32106:
+    """Compressing a context with a skill_view result must emit an explicit
+    [SKILL_PRUNED] marker so the agent knows the skill is no longer in context."""
+
+    def _make_compressor(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            return ContextCompressor(
+                model="test/model",
+                threshold_percent=0.85,
+                protect_first_n=1,
+                protect_last_n=1,
+                quiet_mode=True,
+            )
+
+    def _skill_view_messages(self, skill_name: str, skill_content: str):
+        """Build a minimal message list with a skill_view tool call + result."""
+        return [
+            {"role": "user", "content": "load the skill"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_sv1",
+                        "type": "function",
+                        "function": {
+                            "name": "skill_view",
+                            "arguments": f'{{"name": "{skill_name}"}}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_sv1",
+                "content": skill_content,
+            },
+            {"role": "user", "content": "ok"},
+            {"role": "assistant", "content": "skill loaded"},
+        ]
+
+    def test_pruned_skill_view_contains_skill_pruned_marker(self):
+        """Pruning a skill_view output must produce a [SKILL_PRUNED: <name>] marker."""
+        c = self._make_compressor()
+        # Content must be >200 chars to trigger pruning in Pass 2
+        skill_content = "# my-skill\n\nDo amazing things.\n" + "x " * 200
+        assert len(skill_content) > 200
+        messages = self._skill_view_messages("my-skill", skill_content)
+
+        result, pruned_count = c._prune_old_tool_results(messages, protect_tail_count=2)
+
+        pruned_msg = next(
+            (m for m in result if m.get("role") == "tool" and m.get("tool_call_id") == "call_sv1"),
+            None,
+        )
+        assert pruned_msg is not None, "skill_view tool message not found in result"
+        content = pruned_msg["content"]
+        assert "[SKILL_PRUNED: my-skill]" in content, (
+            f"Expected '[SKILL_PRUNED: my-skill]' in compressed skill_view output, got: {content!r}"
+        )
+        assert pruned_count >= 1
+
+    def test_pruned_skill_view_content_includes_reload_instruction(self):
+        """The pruning marker must tell the agent how to reload the skill."""
+        c = self._make_compressor()
+        skill_content = "# shopping\n\nHelps you shop.\n" + "y " * 200
+        messages = self._skill_view_messages("shopping", skill_content)
+
+        result, _ = c._prune_old_tool_results(messages, protect_tail_count=2)
+
+        pruned_msg = next(
+            m for m in result if m.get("tool_call_id") == "call_sv1"
+        )
+        content = pruned_msg["content"]
+        assert "skill_view(name='shopping')" in content, (
+            f"Expected reload instruction in pruned skill_view output, got: {content!r}"
+        )
+
+    def test_skills_list_does_not_get_skill_pruned_marker(self):
+        """skills_list pruning must NOT emit [SKILL_PRUNED] — only skill_view does."""
+        c = self._make_compressor()
+        messages = [
+            {"role": "user", "content": "list skills"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_sl1",
+                        "type": "function",
+                        "function": {
+                            "name": "skills_list",
+                            "arguments": '{"name": "all"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_sl1",
+                "content": "skill1\nskill2\nskill3\n" + "s " * 200,
+            },
+            {"role": "user", "content": "ok"},
+            {"role": "assistant", "content": "listed"},
+        ]
+        result, _ = c._prune_old_tool_results(messages, protect_tail_count=2)
+        pruned_msg = next(
+            m for m in result if m.get("tool_call_id") == "call_sl1"
+        )
+        assert "[SKILL_PRUNED" not in pruned_msg["content"], (
+            "skills_list must not produce a SKILL_PRUNED marker"
+        )
+
+    def test_tail_protected_skill_view_is_not_pruned(self):
+        """A skill_view in the protected tail must NOT be replaced with a marker."""
+        c = self._make_compressor()
+        skill_content = "# tail-skill\n\nActive skill content.\n" + "z " * 200
+        messages = self._skill_view_messages("tail-skill", skill_content)
+        # protect all 5 messages — nothing should be pruned
+        result, pruned_count = c._prune_old_tool_results(messages, protect_tail_count=5)
+        skill_msg = next(
+            m for m in result if m.get("tool_call_id") == "call_sv1"
+        )
+        assert skill_msg["content"] == skill_content, (
+            "Tail-protected skill_view content must remain intact"
+        )
+        assert "[SKILL_PRUNED" not in skill_msg["content"]

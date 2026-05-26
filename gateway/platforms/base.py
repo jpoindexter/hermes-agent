@@ -2537,10 +2537,17 @@ class BasePlatformAdapter(ABC):
 
                 callback = _chained
 
-        if generation is None:
-            self._post_delivery_callbacks[session_key] = callback
-        else:
-            self._post_delivery_callbacks[session_key] = (int(generation), callback)
+        # Always store as (generation_or_None, callback) tuples so that
+        # pop_post_delivery_callback sees a consistent shape regardless of
+        # whether a generation was supplied at registration time.  Storing
+        # a bare callable when generation=None caused a silent drop: pop
+        # received a raw callable (not a tuple), hit the `if generation is
+        # not None: return None` branch, and discarded the callback without
+        # firing it (Bug #31922).
+        self._post_delivery_callbacks[session_key] = (
+            (int(generation) if generation is not None else None),
+            callback,
+        )
 
     def pop_post_delivery_callback(
         self,
@@ -2556,12 +2563,15 @@ class BasePlatformAdapter(ABC):
             return None
         if isinstance(entry, tuple) and len(entry) == 2:
             entry_generation, callback = entry
-            if generation is not None and int(entry_generation) != int(generation):
+            # entry_generation=None means "match any generation" — the
+            # registrant didn't pin a generation (e.g. _defer_goal_status_notice
+            # when no active session generation is available).
+            if entry_generation is not None and generation is not None and int(entry_generation) != int(generation):
                 return None
             self._post_delivery_callbacks.pop(session_key, None)
             return callback if callable(callback) else None
-        if generation is not None:
-            return None
+        # Legacy bare-callable entries (written before the symmetric-tuple
+        # fix): treat as generation-agnostic, matching any pop call.
         self._post_delivery_callbacks.pop(session_key, None)
         return entry if callable(entry) else None
 

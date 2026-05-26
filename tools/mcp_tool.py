@@ -1585,6 +1585,31 @@ class MCPServerTask:
             except Exception as exc:
                 self.session = None
 
+                # anyio raises RuntimeError("The current task is not holding
+                # this lock") as part of normal cancel-scope cleanup when the
+                # streamable_http_client tears down its internal lock after a
+                # clean session close.  This is not a connection failure — it
+                # is an expected race between the cleanup coroutine and the
+                # task that originally acquired the lock (#31987).  Counting
+                # it as a reconnect failure would exhaust the retry budget and
+                # permanently disconnect the server after 5 such cleanups.
+                #
+                # Guard: only skip the retry counter when the server was
+                # already healthy (_ready was set), so the first-connect path
+                # still accounts for genuine pre-ready failures.
+                if (
+                    isinstance(exc, RuntimeError)
+                    and "not holding this lock" in str(exc)
+                    and self._ready.is_set()
+                ):
+                    logger.debug(
+                        "MCP server '%s': ignoring expected anyio cleanup "
+                        "race (lock not held during streamable_http_client "
+                        "teardown); retrying immediately.",
+                        self.name,
+                    )
+                    continue
+
                 # If this is the first connection attempt, retry with backoff
                 # before giving up. A transient DNS/network blip at startup
                 # should not permanently kill the server.

@@ -1555,6 +1555,100 @@ def test_explicit_nous_auth_failure_still_raises(monkeypatch):
         rp.resolve_runtime_provider(requested="nous")
 
 
+def test_delegation_nous_expired_agent_key_triggers_refresh(monkeypatch):
+    """Bug #32068: delegation.provider=nous with an expired agent_key must call
+    resolve_nous_runtime_credentials() instead of returning the stale key.
+
+    _resolve_explicit_runtime() is reached when explicit_api_key or
+    explicit_base_url is provided (simulating a delegation call that passes an
+    explicit_base_url).  Before the fix, an expired agent_key was returned
+    directly, causing HTTP 401 for sub-agents.
+    """
+    import time
+
+    # Build an auth state whose agent_key is already expired (expires_at in the past).
+    expired_state = {
+        "agent_key": "expired-token",
+        "agent_key_expires_at": int(time.time()) - 3600,  # expired 1 hour ago
+    }
+
+    refresh_called = []
+
+    def _fake_resolve_nous(**kw):
+        refresh_called.append(True)
+        return {
+            "api_key": "fresh-nous-key",
+            "base_url": "https://inference-api.nousresearch.com/v1",
+            "expires_at": int(time.time()) + 7200,
+        }
+
+    monkeypatch.setattr(
+        rp.auth_mod,
+        "get_provider_auth_state",
+        lambda provider: expired_state if provider == "nous" else {},
+    )
+    monkeypatch.setattr(rp, "resolve_nous_runtime_credentials", _fake_resolve_nous)
+    monkeypatch.setattr(
+        rp.auth_mod,
+        "DEFAULT_NOUS_INFERENCE_URL",
+        "https://inference-api.nousresearch.com/v1",
+    )
+
+    # Pass explicit_base_url to enter _resolve_explicit_runtime()
+    resolved = rp._resolve_explicit_runtime(
+        provider="nous",
+        requested_provider="nous",
+        model_cfg={},
+        explicit_base_url="https://inference-api.nousresearch.com/v1",
+    )
+
+    assert refresh_called, "resolve_nous_runtime_credentials should have been called for expired key"
+    assert resolved is not None
+    assert resolved["api_key"] == "fresh-nous-key"
+    assert resolved["provider"] == "nous"
+
+
+def test_delegation_nous_valid_agent_key_not_refreshed(monkeypatch):
+    """Complement: a valid (non-expired) agent_key in the delegation path must
+    NOT trigger a refresh call — the cached key should be used directly.
+    """
+    import time
+
+    valid_state = {
+        "agent_key": "valid-token",
+        "agent_key_expires_at": int(time.time()) + 7200,  # expires 2 hours from now
+    }
+
+    refresh_called = []
+
+    def _fake_resolve_nous(**kw):
+        refresh_called.append(True)
+        return {"api_key": "should-not-appear", "base_url": "", "expires_at": None}
+
+    monkeypatch.setattr(
+        rp.auth_mod,
+        "get_provider_auth_state",
+        lambda provider: valid_state if provider == "nous" else {},
+    )
+    monkeypatch.setattr(rp, "resolve_nous_runtime_credentials", _fake_resolve_nous)
+    monkeypatch.setattr(
+        rp.auth_mod,
+        "DEFAULT_NOUS_INFERENCE_URL",
+        "https://inference-api.nousresearch.com/v1",
+    )
+
+    resolved = rp._resolve_explicit_runtime(
+        provider="nous",
+        requested_provider="nous",
+        model_cfg={},
+        explicit_base_url="https://inference-api.nousresearch.com/v1",
+    )
+
+    assert not refresh_called, "resolve_nous_runtime_credentials should NOT be called for valid key"
+    assert resolved is not None
+    assert resolved["api_key"] == "valid-token"
+
+
 def test_openrouter_provider_not_affected_by_custom_fix(monkeypatch):
     """Fixing custom must not change openrouter behavior."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

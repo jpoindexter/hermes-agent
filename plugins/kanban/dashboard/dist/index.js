@@ -335,6 +335,45 @@
     return html;
   }
 
+  // Allowlist-based HTML sanitizer used as defense-in-depth before
+  // dangerouslySetInnerHTML. Strips any tag not in ALLOWED_TAGS and removes
+  // all event handler attributes (on*). This guards against XSS if renderMarkdown
+  // ever produces unexpected markup or if user-supplied content bypasses escapeHtml.
+  // NOTE: DOMPurify is the preferred replacement if a build step is ever added
+  // (see Bug #31934). Until then, this lightweight allowlist approach is used
+  // because the dashboard is hand-written JS with no bundler/package.json.
+  const ALLOWED_TAGS = new Set([
+    "p", "br", "strong", "em", "code", "pre", "ul", "li",
+    "h1", "h2", "h3", "h4", "a",
+  ]);
+  function sanitizeHtml(html) {
+    // Use a detached DOM element so we never touch the live document.
+    const div = document.createElement("div");
+    div.innerHTML = html;
+    const walker = document.createTreeWalker(div, NodeFilter.SHOW_ELEMENT);
+    const toRemove = [];
+    let node = walker.nextNode();
+    while (node) {
+      const tag = node.tagName.toLowerCase();
+      if (!ALLOWED_TAGS.has(tag)) {
+        toRemove.push(node);
+      } else {
+        // Strip any event-handler or javascript: attributes.
+        for (const attr of Array.from(node.attributes)) {
+          if (attr.name.startsWith("on") || attr.value.trim().toLowerCase().startsWith("javascript:")) {
+            node.removeAttribute(attr.name);
+          }
+        }
+      }
+      node = walker.nextNode();
+    }
+    // Replace disallowed elements with their text content.
+    for (const el of toRemove) {
+      el.replaceWith(document.createTextNode(el.textContent || ""));
+    }
+    return div.innerHTML;
+  }
+
   function MarkdownBlock(props) {
     const enabled = props.enabled !== false;
     if (!enabled) {
@@ -342,7 +381,7 @@
     }
     return h("div", {
       className: "hermes-kanban-md",
-      dangerouslySetInnerHTML: { __html: renderMarkdown(props.source || "") },
+      dangerouslySetInnerHTML: { __html: sanitizeHtml(renderMarkdown(props.source || "")) },
     });
   }
 

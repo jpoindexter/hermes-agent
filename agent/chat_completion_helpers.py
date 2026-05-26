@@ -537,7 +537,13 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     # directly in the content rather than returning separate API fields).
     if not reasoning_text:
         content = assistant_message.content or ""
-        think_blocks = re.findall(r'<think>(.*?)</think>', content, flags=re.DOTALL)
+        # Guard: skip regex entirely when content has no angle-brackets so
+        # large Codex responses don't hold the GIL scanning for tags (#32079).
+        think_blocks = (
+            re.findall(r'<think>(.*?)</think>', content, flags=re.DOTALL)
+            if "<think>" in content
+            else []
+        )
         if think_blocks:
             combined = "\n\n".join(b.strip() for b in think_blocks if b.strip())
             reasoning_text = combined or None

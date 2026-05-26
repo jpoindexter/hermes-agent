@@ -42,3 +42,36 @@ class TestAtomicYamlWrite:
         text = target.read_text(encoding="utf-8")
         assert "key: value" in text
         assert "# comment" in text
+
+    def test_raises_and_does_not_corrupt_on_invalid_extra_content(self, tmp_path):
+        """Validation step: temp file must be valid YAML before replacing original."""
+        target = tmp_path / "data.yaml"
+        original = {"preserved": True}
+        target.write_text(yaml.safe_dump(original), encoding="utf-8")
+
+        # extra_content with an unpaired colon produces a YAML parse error
+        bad_extra = "\nbroken: : bad\n"
+
+        with pytest.raises((ValueError, yaml.YAMLError)):
+            atomic_yaml_write(target, {"new": "data"}, extra_content=bad_extra)
+
+        # Original file must be untouched
+        assert yaml.safe_load(target.read_text(encoding="utf-8")) == original
+
+        # No temp files left behind
+        tmp_files = [f for f in tmp_path.iterdir() if ".tmp" in f.name]
+        assert len(tmp_files) == 0
+
+    def test_valid_data_produces_parseable_output(self, tmp_path):
+        """atomic_yaml_write output must always be parseable by yaml.safe_load."""
+        target = tmp_path / "config.yaml"
+        data = {
+            "model": "claude-opus-4-5",
+            "tools": ["bash", "read", "write"],
+            "nested": {"key": "value", "count": 42},
+        }
+
+        atomic_yaml_write(target, data)
+
+        parsed = yaml.safe_load(target.read_text(encoding="utf-8"))
+        assert parsed == data
