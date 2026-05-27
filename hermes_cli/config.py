@@ -869,7 +869,7 @@ DEFAULT_CONFIG = {
     # Format: provider is the provider name, model is the model slug.
     # "auto" for provider = auto-detect best available provider.
     # Empty model = use provider's default auxiliary model.
-    # All tasks fall back to openrouter:google/gemini-3-flash-preview if
+    # All tasks fall back to openrouter:google/gemini-3.5-flash if
     # the configured provider is unavailable.
     #
     # extra_body: forwarded verbatim as request body fields on every aux call
@@ -894,7 +894,7 @@ DEFAULT_CONFIG = {
     "auxiliary": {
         "vision": {
             "provider": "auto",    # auto | openrouter | nous | codex | custom
-            "model": "",           # e.g. "google/gemini-2.5-flash", "gpt-4o"
+            "model": "",           # e.g. "google/gemini-3.5-flash", "gpt-4o"
             "base_url": "",        # direct OpenAI-compatible endpoint (takes precedence over provider)
             "api_key": "",         # API key for base_url (falls back to OPENAI_API_KEY)
             "timeout": 120,        # seconds — LLM API call timeout; vision payloads need generous timeout
@@ -995,7 +995,7 @@ DEFAULT_CONFIG = {
         # review pass can take several minutes on reasoning models (umbrella
         # building over hundreds of candidate skills). "auto" = use main chat
         # model; override via `hermes model` → auxiliary → Curator to route
-        # to a cheaper aux model (e.g. openrouter google/gemini-3-flash-preview).
+        # to a cheaper aux model (e.g. openrouter google/gemini-3.5-flash).
         "curator": {
             "provider": "auto",
             "model": "",
@@ -1200,6 +1200,10 @@ DEFAULT_CONFIG = {
         # "hindsight", "holographic", "retaindb", "byterover".
         # Only ONE external provider is allowed at a time.
         "provider": "",
+        # Maximum seconds to wait for commit_memory_session() on /new or /reset.
+        # On large sessions the network call can stall for minutes; this timeout
+        # prevents the UI from appearing frozen.  Set to 0 to disable (no limit).
+        "commit_timeout_seconds": 30,
     },
 
     # Subagent delegation — override the provider:model used by delegate_task
@@ -1207,7 +1211,7 @@ DEFAULT_CONFIG = {
     # Uses the same runtime provider resolution as CLI/gateway startup, so all
     # configured providers (OpenRouter, Nous, Z.ai, Kimi, etc.) are supported.
     "delegation": {
-        "model": "",       # e.g. "google/gemini-3-flash-preview" (empty = inherit parent model)
+        "model": "",       # e.g. "google/gemini-3.5-flash" (empty = inherit parent model)
         "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
         "base_url": "",    # direct OpenAI-compatible endpoint for subagents
         "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)

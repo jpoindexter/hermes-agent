@@ -918,3 +918,129 @@ class TestIsImageSizeError:
 
     def test_empty_message(self):
         assert not _is_image_size_error(Exception(""))
+
+
+# ---------------------------------------------------------------------------
+# _download_image — Bug #32296: no retry on non-retryable 4xx errors
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadImageRetryBehavior:
+    """Verify _download_image skips retry backoff for non-retryable 4xx.
+
+    A 404 or 403 for a fixed URL can never succeed — retrying wastes ~6s.
+    429 (rate limited) and 5xx (server error) should still be retried.
+    """
+
+    @pytest.mark.asyncio
+    async def test_404_raises_immediately_without_sleep(self, tmp_path):
+        """404 must raise immediately, not sleep and retry."""
+        import httpx
+        from tools.vision_tools import _download_image
+
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        mock_response.is_redirect = False
+        http_error = httpx.HTTPStatusError(
+            "404 Not Found",
+            request=MagicMock(),
+            response=mock_response,
+        )
+
+        sleep_called = []
+
+        async def fake_sleep(seconds):
+            sleep_called.append(seconds)
+
+        with (
+            patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls,
+            patch("tools.vision_tools.check_website_access", return_value=None),
+            patch("asyncio.sleep", side_effect=fake_sleep),
+        ):
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = AsyncMock(side_effect=http_error)
+            mock_client_cls.return_value = mock_client
+
+            dest = tmp_path / "image.jpg"
+            with pytest.raises(httpx.HTTPStatusError):
+                await _download_image("https://example.com/missing.jpg", dest, max_retries=3)
+
+        # No sleep should have been called for a 404
+        assert sleep_called == [], f"asyncio.sleep was called {len(sleep_called)} time(s) for a 404 — should not retry"
+
+    @pytest.mark.asyncio
+    async def test_403_raises_immediately_without_sleep(self, tmp_path):
+        """403 must also raise immediately — it's non-retryable."""
+        import httpx
+        from tools.vision_tools import _download_image
+
+        mock_response = MagicMock()
+        mock_response.status_code = 403
+        mock_response.is_redirect = False
+        http_error = httpx.HTTPStatusError(
+            "403 Forbidden",
+            request=MagicMock(),
+            response=mock_response,
+        )
+
+        sleep_called = []
+
+        async def fake_sleep(seconds):
+            sleep_called.append(seconds)
+
+        with (
+            patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls,
+            patch("tools.vision_tools.check_website_access", return_value=None),
+            patch("asyncio.sleep", side_effect=fake_sleep),
+        ):
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = AsyncMock(side_effect=http_error)
+            mock_client_cls.return_value = mock_client
+
+            dest = tmp_path / "image.jpg"
+            with pytest.raises(httpx.HTTPStatusError):
+                await _download_image("https://example.com/forbidden.jpg", dest, max_retries=3)
+
+        assert sleep_called == [], f"asyncio.sleep was called for a 403 — should not retry"
+
+    @pytest.mark.asyncio
+    async def test_429_still_retries(self, tmp_path):
+        """429 (Too Many Requests) must still sleep and retry."""
+        import httpx
+        from tools.vision_tools import _download_image
+
+        mock_response = MagicMock()
+        mock_response.status_code = 429
+        mock_response.is_redirect = False
+        http_error = httpx.HTTPStatusError(
+            "429 Too Many Requests",
+            request=MagicMock(),
+            response=mock_response,
+        )
+
+        sleep_called = []
+
+        async def fake_sleep(seconds):
+            sleep_called.append(seconds)
+
+        with (
+            patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls,
+            patch("tools.vision_tools.check_website_access", return_value=None),
+            patch("asyncio.sleep", side_effect=fake_sleep),
+        ):
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = AsyncMock(side_effect=http_error)
+            mock_client_cls.return_value = mock_client
+
+            dest = tmp_path / "image.jpg"
+            with pytest.raises(httpx.HTTPStatusError):
+                await _download_image("https://example.com/ratelimited.jpg", dest, max_retries=2)
+
+        # Should have slept at least once between retries
+        assert len(sleep_called) >= 1, "asyncio.sleep must be called for a 429 retry"

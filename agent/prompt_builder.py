@@ -997,8 +997,15 @@ def _skill_should_show(
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
+    bound_skill_names: "list[str] | None" = None,
 ) -> str:
     """Build a compact skill index for the system prompt.
+
+    When *bound_skill_names* is provided (non-empty list), only those skills
+    are shown in the index.  Other skills remain loadable on demand via
+    ``skill_view`` — they simply aren't pre-advertised.  Intended for cron
+    jobs that specify ``skills: [...]`` so the model doesn't confuse bounded
+    job context with unrelated global skills.
 
     Two-layer cache:
       1. In-process LRU dict keyed by (skills_dir, tools, toolsets)
@@ -1028,6 +1035,7 @@ def build_skills_system_prompt(
         or ""
     )
     disabled = get_disabled_skill_names()
+    _bound_key = tuple(sorted(bound_skill_names)) if bound_skill_names else ()
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
@@ -1035,6 +1043,7 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        _bound_key,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1167,6 +1176,23 @@ def build_skills_system_prompt(
                 category_descriptions.setdefault(cat, str(cat_desc).strip().strip("'\""))
             except Exception as e:
                 logger.debug("Could not read external skill description %s: %s", desc_file, e)
+
+    # ── Bound-skill filtering ─────────────────────────────────────────────
+    # When a cron job (or any caller) specifies a restricted set of skills,
+    # prune skills_by_category to only those names.  Matching is done against
+    # the frontmatter_name (the key stored in skills_by_category tuples).
+    # Other skills are still loadable on demand via skill_view — they simply
+    # don't appear in the pre-advertised index.
+    if bound_skill_names:
+        _allowed = set(bound_skill_names)
+        skills_by_category = {
+            cat: [(name, desc) for name, desc in entries if name in _allowed]
+            for cat, entries in skills_by_category.items()
+        }
+        # Drop empty categories
+        skills_by_category = {
+            cat: entries for cat, entries in skills_by_category.items() if entries
+        }
 
     if not skills_by_category:
         result = ""

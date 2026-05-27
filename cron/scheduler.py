@@ -57,6 +57,31 @@ class CronPromptInjectionBlocked(Exception):
     """
 
 
+def _cron_bound_skill_names(job: dict) -> "list[str] | None":
+    """Return the normalised skill-name list for a cron job, or None.
+
+    When a job has ``skills: [...]`` (or the legacy ``skill: <name>`` singular),
+    only those skills are pre-advertised in the agent's system prompt.  Other
+    skills remain loadable on demand via ``skill_view`` — they simply aren't
+    shown in the index, preventing the model from picking up unrelated skills.
+
+    Returns ``None`` (not an empty list) when the job specifies no skills so
+    callers can distinguish "job has no skills" from "job has an empty list"
+    and fall through to default (full index) behaviour.
+    """
+    skills = job.get("skills")
+    if skills is None:
+        legacy = job.get("skill")
+        if not legacy:
+            return None
+        skills = [legacy]
+    elif isinstance(skills, str):
+        skills = [skills]
+
+    normalised = [str(s).strip() for s in skills if str(s).strip()]
+    return normalised if normalised else None
+
+
 def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     """Resolve the toolset list for a cron job.
 
@@ -1489,6 +1514,19 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             }
             if job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")
+            # Propagate model.api_key / model.base_url from config.yaml so cron jobs
+            # work the same as interactive CLI sessions (bug #32239).  The CLI path
+            # reads these and passes them as explicit_api_key/explicit_base_url;
+            # without this, cron falls through to the OpenRouter resolver and fails
+            # with "API key required" when a custom provider is configured.
+            # Only inject when the job itself hasn't already pinned the value.
+            _mcfg = _cfg.get("model") if isinstance(_cfg.get("model"), dict) else {}
+            _cfg_api_key = (_mcfg.get("api_key") or "").strip()
+            _cfg_base_url = (_mcfg.get("base_url") or "").strip().rstrip("/")
+            if _cfg_api_key and "explicit_api_key" not in runtime_kwargs:
+                runtime_kwargs["explicit_api_key"] = _cfg_api_key
+            if _cfg_base_url and "explicit_base_url" not in runtime_kwargs:
+                runtime_kwargs["explicit_base_url"] = _cfg_base_url
             runtime = resolve_runtime_provider(**runtime_kwargs)
         except AuthError as auth_exc:
             # Primary provider auth failed — try fallback chain before giving up.
@@ -1586,6 +1624,10 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,
+            # Scope the skill index to only the job's bound skills so the model
+            # doesn't confuse this job's context with unrelated global skills.
+            # Other skills remain loadable on demand via skill_view.
+            bound_skill_names=_cron_bound_skill_names(job),
         )
         
         # Run the agent with an *inactivity*-based timeout: the job can run

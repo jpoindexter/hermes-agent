@@ -2295,6 +2295,24 @@ def delegate_task(
                 parent_agent.session_cost_source = "subagent"
             if getattr(parent_agent, "session_cost_status", "unknown") in {None, "", "unknown"}:
                 parent_agent.session_cost_status = "estimated"
+            # Persist the subagent cost delta to the session DB so that
+            # `hermes insights` and sessions.estimated_cost_usd reflect the true
+            # cost.  The in-memory total is already correct above; this call
+            # keeps the DB in sync.  update_token_counts uses increment semantics
+            # (absolute=False default), so we pass only the delta — not the
+            # cumulative total — to avoid double-counting the parent's own calls.
+            if (
+                hasattr(parent_agent, "_session_db")
+                and parent_agent._session_db
+                and hasattr(parent_agent, "session_id")
+            ):
+                try:
+                    parent_agent._session_db.update_token_counts(
+                        parent_agent.session_id,
+                        estimated_cost_usd=float(_children_cost_total),
+                    )
+                except Exception:
+                    pass  # non-fatal — in-memory total is still correct
         except Exception:
             logger.debug("Subagent cost rollup failed", exc_info=True)
 

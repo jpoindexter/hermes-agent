@@ -1320,3 +1320,66 @@ class TestMultimodalToolContentUnsupported:
         e = MockAPIError("bad request: missing field 'model'", status_code=400)
         result = classify_api_error(e, provider="openrouter", model="anthropic/claude-sonnet-4")
         assert result.reason != FailoverReason.multimodal_tool_content_unsupported
+
+
+# ── Test: Bug #32420 — HTTP 402 must classify as billing, not rate_limit ──
+
+
+class TestBug32420_402NotRateLimit:
+    """HTTP 402 (billing/spend limit) must never be classified as rate_limit.
+
+    Before the fix, FailoverReason.billing and FailoverReason.rate_limit were
+    both included in an `is_rate_limited` set, causing the agent to print
+    "Rate limited — switching to fallback provider..." for 402 billing errors.
+    These tests anchor the classifier contract so that regression is caught.
+    """
+
+    def test_plain_402_is_billing_not_rate_limit(self):
+        """A bare 402 must classify as billing, not rate_limit."""
+        e = MockAPIError("Payment Required", status_code=402)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.billing
+        assert result.reason != FailoverReason.rate_limit
+
+    def test_402_spend_limit_message_is_billing(self):
+        """402 with 'spend limit' in the body must be billing."""
+        e = MockAPIError(
+            "Spend limit exceeded",
+            status_code=402,
+            body={"error": {"message": "You have exceeded your API key spend limit"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.billing
+        assert result.reason != FailoverReason.rate_limit
+        assert result.retryable is False
+
+    def test_402_billing_is_non_retryable(self):
+        """Billing exhaustion must not be retryable — no point in retrying
+        with the same key against a spend-capped account."""
+        e = MockAPIError("payment required", status_code=402)
+        result = classify_api_error(e)
+        assert result.retryable is False
+
+    def test_billing_and_rate_limit_are_distinct_reasons(self):
+        """FailoverReason.billing and FailoverReason.rate_limit must be separate
+        enum values so callers can differentiate the user-facing message."""
+        assert FailoverReason.billing != FailoverReason.rate_limit
+
+    def test_429_is_rate_limit_not_billing(self):
+        """429 must still classify as rate_limit, not billing."""
+        e = MockAPIError("Too Many Requests", status_code=429)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.reason != FailoverReason.billing
+        assert result.retryable is True
+
+    def test_402_transient_quota_is_rate_limit(self):
+        """402 + 'usage limit' + 'try again' must still map to rate_limit
+        (this is the ambiguous transient case, not a spend-cap error)."""
+        e = MockAPIError(
+            "usage limit reached, try again in 10 minutes",
+            status_code=402,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True

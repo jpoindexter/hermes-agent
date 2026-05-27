@@ -306,3 +306,96 @@ def test_new_session_with_duplicate_title_surfaces_error(capsys):
     captured = capsys.readouterr()
     assert "New session started: Dup" not in captured.out
     assert "New session started!" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# Bug #32234 — commit_memory_session timeout (#32234)
+# ---------------------------------------------------------------------------
+
+
+def _make_slow_commit_cli(tmp_path, sleep_seconds=5.0):
+    """CLI where commit_memory_session sleeps longer than the configured timeout."""
+    import time as _time
+
+    cli = _prepare_cli_with_active_session(tmp_path)
+
+    def _slow_commit(_history):
+        _time.sleep(sleep_seconds)
+
+    cli.agent.commit_memory_session = _slow_commit
+    return cli
+
+
+def _patch_cli_config_timeout(cli_instance, value):
+    """Patch CLI_CONFIG in the module that cli_instance.new_session actually reads.
+
+    _make_cli() uses importlib.reload inside a patch.dict(sys.modules) context,
+    so sys.modules["cli"] is restored to the pre-reload module on exit. The
+    HermesCLI methods still reference the *reloaded* module's globals. Accessing
+    via __func__.__globals__ resolves the correct dict regardless of module identity.
+    """
+    globals_dict = cli_instance.new_session.__func__.__globals__
+    cfg = globals_dict["CLI_CONFIG"]
+    cfg.setdefault("memory", {})
+    original = cfg["memory"].copy()
+    cfg["memory"]["commit_timeout_seconds"] = value
+    return globals_dict, original
+
+
+def _restore_cli_config_timeout(globals_dict, original):
+    globals_dict["CLI_CONFIG"]["memory"] = original
+
+
+def test_new_session_does_not_hang_when_commit_memory_times_out(tmp_path):
+    """Bug #32234: /new must not block when commit_memory_session exceeds the timeout.
+
+    Uses a sub-second timeout so the test runs fast — we verify session rotation
+    completes even when the memory call never returns within the window.
+    """
+    import time as _time
+
+    cli = _make_slow_commit_cli(tmp_path, sleep_seconds=5.0)
+    g, original = _patch_cli_config_timeout(cli, 0.1)
+
+    old_session_id = cli.session_id
+    start = _time.monotonic()
+    try:
+        cli.new_session(silent=False)
+    finally:
+        _restore_cli_config_timeout(g, original)
+
+    elapsed = _time.monotonic() - start
+
+    # Must not take longer than a few seconds — certainly not 5s
+    assert elapsed < 3.0, f"new_session blocked for {elapsed:.1f}s"
+    # Session must have rotated regardless of the timeout
+    assert cli.session_id != old_session_id
+    # Conversation history must be cleared
+    assert cli.conversation_history == []
+
+
+def test_new_session_prints_timeout_warning_on_slow_commit(tmp_path, capsys):
+    """Bug #32234: a timeout must print a user-visible warning."""
+    cli = _make_slow_commit_cli(tmp_path, sleep_seconds=5.0)
+    g, original = _patch_cli_config_timeout(cli, 0.1)
+    try:
+        cli.new_session(silent=False)
+    finally:
+        _restore_cli_config_timeout(g, original)
+
+    out = capsys.readouterr().out
+    assert "timed out" in out.lower() or "timeout" in out.lower()
+
+
+def test_new_session_suppresses_memory_messages_when_silent(tmp_path, capsys):
+    """Bug #32234: silent=True must suppress both the start and timeout messages."""
+    cli = _make_slow_commit_cli(tmp_path, sleep_seconds=5.0)
+    g, original = _patch_cli_config_timeout(cli, 0.1)
+    try:
+        cli.new_session(silent=True)
+    finally:
+        _restore_cli_config_timeout(g, original)
+
+    out = capsys.readouterr().out
+    assert "extracting" not in out.lower()
+    assert "timed out" not in out.lower()

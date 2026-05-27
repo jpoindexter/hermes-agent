@@ -17,6 +17,8 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from tools.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
     DELEGATE_TASK_SCHEMA,
@@ -829,6 +831,122 @@ class TestSubagentCostRollup(unittest.TestCase):
         # Parent cost unchanged.
         self.assertEqual(parent.session_estimated_cost_usd, 0.10)
         self.assertEqual(len(result["results"]), 1)
+
+    # ------------------------------------------------------------------
+    # Bug #32220 — subagent costs must be flushed to the session DB
+    # ------------------------------------------------------------------
+
+    def _make_parent_with_session_db(self, starting_cost=0.0, session_id="test-sid"):
+        """Parent with a real session_id and a mock _session_db."""
+        parent = self._make_parent_with_cost_counters(starting_cost=starting_cost)
+        parent.session_id = session_id
+        parent._session_db = MagicMock()
+        return parent
+
+    def test_child_cost_persisted_to_session_db(self):
+        """Bug #32220: update_token_counts must be called with the child cost delta."""
+        parent = self._make_parent_with_session_db(starting_cost=0.10, session_id="sid-001")
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.return_value = {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "done",
+                "api_calls": 1,
+                "duration_seconds": 0.5,
+                "_child_role": "leaf",
+                "_child_cost_usd": 0.35,
+            }
+            delegate_task(goal="billed run", parent_agent=parent)
+
+        # In-memory total must be updated
+        self.assertAlmostEqual(parent.session_estimated_cost_usd, 0.45, places=6)
+        # DB must be updated with the delta (not the cumulative total)
+        parent._session_db.update_token_counts.assert_called_once_with(
+            "sid-001",
+            estimated_cost_usd=pytest.approx(0.35, abs=1e-6),
+        )
+
+    def test_batch_children_cost_persisted_to_session_db(self):
+        """Bug #32220: batch rollup must persist the sum of all child costs once."""
+        parent = self._make_parent_with_session_db(starting_cost=0.0, session_id="sid-002")
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.side_effect = [
+                {
+                    "task_index": 0,
+                    "status": "completed",
+                    "summary": "A",
+                    "api_calls": 1,
+                    "duration_seconds": 0.5,
+                    "_child_role": "leaf",
+                    "_child_cost_usd": 0.10,
+                },
+                {
+                    "task_index": 1,
+                    "status": "completed",
+                    "summary": "B",
+                    "api_calls": 1,
+                    "duration_seconds": 0.5,
+                    "_child_role": "leaf",
+                    "_child_cost_usd": 0.20,
+                },
+            ]
+            delegate_task(
+                tasks=[{"goal": "A"}, {"goal": "B"}],
+                parent_agent=parent,
+            )
+
+        # update_token_counts called once with the combined delta (0.10 + 0.20)
+        parent._session_db.update_token_counts.assert_called_once()
+        call_kwargs = parent._session_db.update_token_counts.call_args
+        self.assertEqual(call_kwargs[0][0], "sid-002")
+        self.assertAlmostEqual(
+            call_kwargs[1]["estimated_cost_usd"], 0.30, places=6
+        )
+
+    def test_db_persist_skipped_when_session_db_is_none(self):
+        """Bug #32220: must not crash when _session_db is None (legacy fixture)."""
+        parent = self._make_parent_with_cost_counters(starting_cost=0.0)
+        parent.session_id = "sid-003"
+        parent._session_db = None  # explicit None
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.return_value = {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "done",
+                "api_calls": 1,
+                "duration_seconds": 0.5,
+                "_child_role": "leaf",
+                "_child_cost_usd": 0.50,
+            }
+            # Must not raise
+            delegate_task(goal="no db", parent_agent=parent)
+
+        # In-memory total still updated
+        self.assertAlmostEqual(parent.session_estimated_cost_usd, 0.50, places=6)
+
+    def test_db_persist_swallows_exception(self):
+        """Bug #32220: a DB error must not abort session rollup or raise."""
+        parent = self._make_parent_with_session_db(starting_cost=0.0, session_id="sid-004")
+        parent._session_db.update_token_counts.side_effect = RuntimeError("db gone")
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.return_value = {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "done",
+                "api_calls": 1,
+                "duration_seconds": 0.5,
+                "_child_role": "leaf",
+                "_child_cost_usd": 0.25,
+            }
+            # Must not raise even though the DB call blows up
+            delegate_task(goal="db error", parent_agent=parent)
+
+        # In-memory total still correct
+        self.assertAlmostEqual(parent.session_estimated_cost_usd, 0.25, places=6)
 
 
 class TestBlockedTools(unittest.TestCase):

@@ -6253,7 +6253,31 @@ class HermesCLI:
         """Start a fresh session with a new session ID and cleared agent state."""
         if self.agent and self.conversation_history:
             # Trigger memory extraction on the old session before session_id rotates.
-            self.agent.commit_memory_session(self.conversation_history)
+            # Use a thread + timeout so a slow/hung network call can't freeze the UI.
+            _commit_timeout = float(
+                CLI_CONFIG.get("memory", {}).get("commit_timeout_seconds", 30) or 30
+            )
+            if not silent:
+                print("Extracting session memory...")
+            _timed_out = False
+            if _commit_timeout > 0:
+                import threading as _threading
+                _t = _threading.Thread(
+                    target=self.agent.commit_memory_session,
+                    args=(self.conversation_history,),
+                    daemon=True,
+                )
+                _t.start()
+                _t.join(timeout=_commit_timeout)
+                if _t.is_alive():
+                    _timed_out = True
+            else:
+                try:
+                    self.agent.commit_memory_session(self.conversation_history)
+                except Exception:
+                    pass
+            if _timed_out and not silent:
+                print("Memory extraction timed out — continuing without saving.")
             self._notify_session_boundary("on_session_finalize")
         elif self.agent:
             # First session or empty history — still finalize the old session

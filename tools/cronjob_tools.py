@@ -633,7 +633,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "schedule": {
                 "type": "string",
-                "description": "For create/update: '30m', 'every 2h', '0 9 * * *', or ISO timestamp"
+                "description": "Required when action=create. Also used for action=update to change the schedule. Cron expression or human-readable interval: '30m', 'every 2h', '0 9 * * 1' (every Monday at 9am), or ISO timestamp. MUST be provided for action=create — omitting it will fail."
             },
             "name": {
                 "type": "string",
@@ -716,7 +716,14 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "description": "Optional Hermes profile name to run the job under. When set, the scheduler resolves that profile, applies a context-local Hermes home override, loads that profile's config/.env for the run, and bridges HERMES_HOME into subprocesses. Any temporary process-environment changes from profile .env loading are restored after the job exits. Use 'default' for the root Hermes profile. Named profiles must already exist. When unset (default), preserves the scheduler's existing profile. On update, pass an empty string to clear. Jobs with profile run sequentially (not parallel) to keep profile-scoped runtime state isolated."
             },
         },
-        "required": ["action"]
+        "required": ["action"],
+        "if": {
+            "properties": {"action": {"const": "create"}},
+            "required": ["action"]
+        },
+        "then": {
+            "required": ["action", "schedule", "prompt"]
+        }
     }
 }
 

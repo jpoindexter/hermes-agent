@@ -365,3 +365,82 @@ class TestUnifiedCronjobTool:
         assert updated["success"] is True
         stored = get_job(created["job_id"])
         assert stored["deliver"] == "telegram"
+
+
+# =========================================================================
+# Bug #32427 — CRONJOB_SCHEMA must mark schedule (and prompt) as required
+# when action=create, so models cannot silently omit them.
+# =========================================================================
+
+class TestCronjobSchemaRequiredFields:
+    """Verify that CRONJOB_SCHEMA guides models to supply schedule/prompt on create."""
+
+    def test_action_in_top_level_required(self):
+        """action must always be in the flat required list."""
+        from tools.cronjob_tools import CRONJOB_SCHEMA
+        assert "action" in CRONJOB_SCHEMA["parameters"]["required"]
+
+    def test_if_then_present_for_create(self):
+        """The schema must have an if/then block that fires when action=create."""
+        from tools.cronjob_tools import CRONJOB_SCHEMA
+        params = CRONJOB_SCHEMA["parameters"]
+        assert "if" in params, (
+            "CRONJOB_SCHEMA.parameters must have an 'if' key for conditional required "
+            "(bug #32427 — models omit schedule on action=create without it)"
+        )
+        assert "then" in params, (
+            "CRONJOB_SCHEMA.parameters must have a 'then' key paired with 'if'"
+        )
+
+    def test_schedule_required_in_then_block(self):
+        """schedule must appear in the then.required list (fires for action=create)."""
+        from tools.cronjob_tools import CRONJOB_SCHEMA
+        params = CRONJOB_SCHEMA["parameters"]
+        then_required = params.get("then", {}).get("required", [])
+        assert "schedule" in then_required, (
+            f"'schedule' must be in then.required; got {then_required!r}. "
+            "Bug #32427: models omit schedule when it is not marked required for create."
+        )
+
+    def test_prompt_required_in_then_block(self):
+        """prompt must appear in the then.required list (fires for action=create)."""
+        from tools.cronjob_tools import CRONJOB_SCHEMA
+        params = CRONJOB_SCHEMA["parameters"]
+        then_required = params.get("then", {}).get("required", [])
+        assert "prompt" in then_required, (
+            f"'prompt' must be in then.required; got {then_required!r}. "
+            "Models that omit prompt on create will hit a runtime error."
+        )
+
+    def test_if_condition_targets_action_create(self):
+        """The if condition must match action == 'create' specifically."""
+        from tools.cronjob_tools import CRONJOB_SCHEMA
+        params = CRONJOB_SCHEMA["parameters"]
+        if_block = params.get("if", {})
+        # The if block should constrain the action property to 'create'
+        action_constraint = (
+            if_block.get("properties", {}).get("action", {})
+        )
+        assert action_constraint.get("const") == "create" or \
+               "create" in action_constraint.get("enum", []), (
+            f"The 'if' block must target action='create'; got if={if_block!r}"
+        )
+
+    def test_schedule_description_mentions_required_for_create(self):
+        """The schedule description must hint that it's required for action=create."""
+        from tools.cronjob_tools import CRONJOB_SCHEMA
+        desc = CRONJOB_SCHEMA["parameters"]["properties"]["schedule"]["description"]
+        assert "required" in desc.lower() and "create" in desc.lower(), (
+            f"schedule description should state it is required for action=create; "
+            f"got: {desc!r}"
+        )
+
+    def test_create_without_schedule_returns_error(self):
+        """Runtime: create without schedule must return a tool_error (not crash)."""
+        import os
+        os.environ.setdefault("HERMES_INTERACTIVE", "1")
+        result = json.loads(cronjob(action="create", prompt="daily briefing"))
+        assert result.get("success") is False
+        assert "schedule" in (result.get("error") or result.get("message") or "").lower(), (
+            f"Expected error mentioning 'schedule', got: {result!r}"
+        )

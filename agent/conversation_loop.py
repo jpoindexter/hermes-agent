@@ -2430,7 +2430,10 @@ def run_conversation(
                         base_url=getattr(agent, "base_url", None),
                     )
                     if not pool_may_recover:
-                        agent._emit_status("⚠️ Rate limited — switching to fallback provider...")
+                        if classified.reason == FailoverReason.billing:
+                            agent._emit_status("⚠️ Billing limit reached — switching to fallback provider...")
+                        else:
+                            agent._emit_status("⚠️ Rate limited — switching to fallback provider...")
                         if agent._try_activate_fallback(reason=classified.reason):
                             retry_count = 0
                             compression_attempts = 0
@@ -2810,7 +2813,13 @@ def run_conversation(
                     agent._vprint(f"{agent.log_prefix}   🔌 Provider: {_provider}  Model: {_model}", force=True)
                     agent._vprint(f"{agent.log_prefix}   🌐 Endpoint: {_base}", force=True)
                     # Actionable guidance for common auth errors
-                    if classified.is_auth or classified.reason == FailoverReason.billing:
+                    if classified.reason == FailoverReason.billing:
+                        agent._vprint(f"{agent.log_prefix}   💡 API key spend limit exceeded (HTTP 402). Check:", force=True)
+                        agent._vprint(f"{agent.log_prefix}      • Your account spending cap or credit balance", force=True)
+                        agent._vprint(f"{agent.log_prefix}      • Top up your account or increase the spend limit, then retry", force=True)
+                        if base_url_host_matches(str(_base), "openrouter.ai"):
+                            agent._vprint(f"{agent.log_prefix}      • Check credits: https://openrouter.ai/settings/credits", force=True)
+                    elif classified.is_auth:
                         if _provider in {"openai-codex", "xai-oauth"} and status_code == 401:
                             if _provider == "openai-codex":
                                 agent._vprint(f"{agent.log_prefix}   💡 Codex OAuth token was rejected (HTTP 401). Your token may have been", force=True)
@@ -2870,7 +2879,9 @@ def run_conversation(
                         primary_recovery_attempted = False
                         continue
                     _final_summary = agent._summarize_api_error(api_error)
-                    if is_rate_limited:
+                    if classified.reason == FailoverReason.billing:
+                        agent._emit_status(f"❌ Billing limit exceeded after {max_retries} retries — {_final_summary}")
+                    elif is_rate_limited:
                         agent._emit_status(f"❌ Rate limited after {max_retries} retries — {_final_summary}")
                     else:
                         agent._emit_status(f"❌ API failed after {max_retries} retries — {_final_summary}")

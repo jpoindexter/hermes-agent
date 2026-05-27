@@ -2548,3 +2548,156 @@ class TestSendMediaTimeoutCancelsFuture:
         # 2. Second file still got dispatched — one timeout doesn't abort the batch
         adapter.send_video.assert_called_once()
         assert adapter.send_video.call_args[1]["video_path"] == str(fast.resolve())
+
+
+class TestRunJobConfigModelApiKey:
+    """Bug #32239 — cron scheduler must propagate model.api_key / model.base_url
+    from config.yaml into resolve_runtime_provider, the same way the interactive
+    CLI path does via explicit_api_key / explicit_base_url.
+
+    Without this fix the cron path falls through to the OpenRouter resolver and
+    fails with "API key required" whenever a custom provider is configured in
+    config.yaml.
+    """
+
+    _RUNTIME = {
+        "api_key": "cfg-key-123",
+        "base_url": "https://custom.example/v1",
+        "provider": "custom",
+        "api_mode": "chat_completions",
+    }
+
+    def _make_config_yaml(self, tmp_path, api_key="cfg-key-123", base_url="https://custom.example/v1"):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            f"model:\n"
+            f"  default: my-model\n"
+            f"  api_key: {api_key}\n"
+            f"  base_url: {base_url}\n"
+        )
+        return cfg
+
+    def test_model_api_key_from_config_propagated_to_resolve(self, tmp_path):
+        """model.api_key in config.yaml is passed as explicit_api_key to
+        resolve_runtime_provider (bug #32239)."""
+        self._make_config_yaml(tmp_path)
+        job = {"id": "apikey-job", "name": "api key test", "prompt": "hi"}
+        fake_db = MagicMock()
+        captured = {}
+
+        def capturing_resolve(**kwargs):
+            captured.update(kwargs)
+            return self._RUNTIME
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   side_effect=capturing_resolve), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True, f"Expected success, got error: {error}"
+        assert captured.get("explicit_api_key") == "cfg-key-123", (
+            f"expected explicit_api_key='cfg-key-123', got {captured!r}. "
+            "model.api_key from config.yaml was not forwarded to resolve_runtime_provider."
+        )
+
+    def test_model_base_url_from_config_propagated_to_resolve(self, tmp_path):
+        """model.base_url in config.yaml is passed as explicit_base_url to
+        resolve_runtime_provider (bug #32239)."""
+        self._make_config_yaml(tmp_path)
+        job = {"id": "baseurl-job", "name": "base url test", "prompt": "hi"}
+        fake_db = MagicMock()
+        captured = {}
+
+        def capturing_resolve(**kwargs):
+            captured.update(kwargs)
+            return self._RUNTIME
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   side_effect=capturing_resolve), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True, f"Expected success, got error: {error}"
+        assert captured.get("explicit_base_url") == "https://custom.example/v1", (
+            f"expected explicit_base_url='https://custom.example/v1', got {captured!r}. "
+            "model.base_url from config.yaml was not forwarded to resolve_runtime_provider."
+        )
+
+    def test_job_explicit_base_url_not_overridden_by_config(self, tmp_path):
+        """When the job already specifies base_url, the config.yaml model.base_url
+        must NOT override it (job-level setting wins)."""
+        self._make_config_yaml(tmp_path, base_url="https://config.example/v1")
+        job = {
+            "id": "job-baseurl",
+            "name": "job base url wins",
+            "prompt": "hi",
+            "base_url": "https://job-specific.example/v1",
+        }
+        fake_db = MagicMock()
+        captured = {}
+
+        def capturing_resolve(**kwargs):
+            captured.update(kwargs)
+            return self._RUNTIME
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   side_effect=capturing_resolve), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        assert captured.get("explicit_base_url") == "https://job-specific.example/v1", (
+            f"Job-level base_url should win over config.yaml model.base_url, "
+            f"got {captured!r}"
+        )
+
+    def test_empty_api_key_in_config_not_propagated(self, tmp_path):
+        """An empty or whitespace-only model.api_key must not be forwarded."""
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("model:\n  api_key: ''\n  base_url: ''\n")
+        job = {"id": "empty-key-job", "name": "empty key", "prompt": "hi"}
+        fake_db = MagicMock()
+        captured = {}
+
+        def capturing_resolve(**kwargs):
+            captured.update(kwargs)
+            return self._RUNTIME
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   side_effect=capturing_resolve), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        assert "explicit_api_key" not in captured, (
+            f"Empty api_key should not be forwarded, got {captured!r}"
+        )
+        assert "explicit_base_url" not in captured, (
+            f"Empty base_url should not be forwarded, got {captured!r}"
+        )

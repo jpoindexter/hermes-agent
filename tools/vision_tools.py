@@ -210,6 +210,20 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
             return destination
         except Exception as e:
             last_error = e
+            # Non-retryable: 4xx HTTP errors other than 429 (Too Many Requests).
+            # A fixed URL that returns 404/403/401/410/etc. will never succeed
+            # on retry — skip backoff to avoid 6+ seconds of wasted latency.
+            # 429 (rate limited) and all 5xx (server errors) are still retried.
+            if isinstance(e, httpx.HTTPStatusError):
+                sc = e.response.status_code
+                if 400 <= sc < 500 and sc != 429:
+                    logger.error(
+                        "Image download failed with non-retryable HTTP %s: %s",
+                        sc,
+                        str(e)[:100],
+                        exc_info=True,
+                    )
+                    raise
             if attempt < max_retries - 1:
                 wait_time = 2 ** (attempt + 1)  # 2s, 4s, 8s
                 logger.warning("Image download failed (attempt %s/%s): %s", attempt + 1, max_retries, str(e)[:50])
@@ -222,7 +236,7 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
                     str(e)[:100],
                     exc_info=True,
                 )
-    
+
     if last_error is None:
         raise RuntimeError(
             f"_download_image exited retry loop without attempting (max_retries={max_retries})"
@@ -650,7 +664,7 @@ async def vision_analyze_tool(
         image_url (str): The URL or local file path of the image to analyze.
                          Accepts http://, https:// URLs or absolute/relative file paths.
         user_prompt (str): The pre-formatted prompt for the vision model
-        model (str): The vision model to use (default: google/gemini-3-flash-preview)
+        model (str): The vision model to use (default: google/gemini-3.5-flash)
     
     Returns:
         str: JSON string containing the analysis results with the following structure:
@@ -1333,7 +1347,7 @@ async def video_analyze_tool(
             analysis = (
                 f"The model does not support video analysis or the request was "
                 f"rejected. Ensure you're using a video-capable model "
-                f"(e.g. google/gemini-2.5-flash). Error: {e}"
+                f"(e.g. google/gemini-3.5-flash). Error: {e}"
             )
         elif any(hint in err_str for hint in (
             "too large", "payload", "413", "content_too_large",

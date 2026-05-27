@@ -28,6 +28,7 @@ def _reset_signal_scheduler():
 
 from gateway.config import Platform
 from tools.send_message_tool import (
+    SEND_MESSAGE_SCHEMA,
     _is_telegram_thread_not_found,
     _parse_target_ref,
     _send_matrix_via_adapter,
@@ -2683,3 +2684,51 @@ class TestSendTelegramThreadNotFoundRetry:
         finally:
             if media_path and os.path.exists(media_path):
                 os.unlink(media_path)
+
+
+# ---------------------------------------------------------------------------
+# SEND_MESSAGE_SCHEMA — Bug #32376: required field must include "action"
+# ---------------------------------------------------------------------------
+
+
+class TestSendMessageSchema:
+    """Verify SEND_MESSAGE_SCHEMA declares required fields correctly.
+
+    Models that perform strict JSON Schema validation need the schema to
+    accurately declare which parameters are required.  Returning an empty
+    ``required`` list while the implementation enforces ``target`` and
+    ``message`` for action='send' causes repeated tool failures.
+    """
+
+    def test_required_includes_action(self):
+        """'action' must be in the required list so models know to supply it."""
+        required = SEND_MESSAGE_SCHEMA["parameters"]["required"]
+        assert "action" in required, (
+            f"SEND_MESSAGE_SCHEMA.parameters.required must include 'action', got: {required}"
+        )
+
+    def test_required_is_not_empty(self):
+        """required must never be an empty list — this was the original bug."""
+        required = SEND_MESSAGE_SCHEMA["parameters"]["required"]
+        assert len(required) > 0, "SEND_MESSAGE_SCHEMA.parameters.required must not be empty"
+
+    def test_target_description_notes_required_for_send(self):
+        """'target' param description must mention it is required when action='send'."""
+        desc = SEND_MESSAGE_SCHEMA["parameters"]["properties"]["target"]["description"].lower()
+        assert "required" in desc, (
+            "SEND_MESSAGE_SCHEMA target description must note it is required for send"
+        )
+
+    def test_message_description_notes_required_for_send(self):
+        """'message' param description must mention it is required when action='send'."""
+        desc = SEND_MESSAGE_SCHEMA["parameters"]["properties"]["message"]["description"].lower()
+        assert "required" in desc, (
+            "SEND_MESSAGE_SCHEMA message description must note it is required for send"
+        )
+
+    def test_action_property_has_enum(self):
+        """'action' must still enumerate its valid values."""
+        action_prop = SEND_MESSAGE_SCHEMA["parameters"]["properties"]["action"]
+        assert "enum" in action_prop
+        assert "send" in action_prop["enum"]
+        assert "list" in action_prop["enum"]

@@ -1190,6 +1190,61 @@ class TestOpenAIModelExecutionGuidance:
 
 
 # =========================================================================
+# build_skills_system_prompt — bound_skill_names filtering (bug #32235)
+# =========================================================================
+
+
+class TestBuildSkillsSystemPromptBoundSkillNames:
+    """When bound_skill_names is provided, only those skills appear in the index."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_skills_cache(self):
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        yield
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+
+    @pytest.fixture
+    def two_skill_env(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for name, desc in [("web-crawl", "Crawl pages"), ("freshrss", "RSS feeds")]:
+            d = tmp_path / "skills" / "productivity" / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {desc}\n---\n\nBody.\n",
+                encoding="utf-8",
+            )
+        return tmp_path
+
+    def test_no_bound_shows_all(self, two_skill_env):
+        result = build_skills_system_prompt()
+        assert "web-crawl" in result
+        assert "freshrss" in result
+
+    def test_bound_single_hides_others(self, two_skill_env):
+        result = build_skills_system_prompt(bound_skill_names=["web-crawl"])
+        assert "web-crawl" in result
+        assert "freshrss" not in result
+
+    def test_bound_none_is_same_as_no_bound(self, two_skill_env):
+        result = build_skills_system_prompt(bound_skill_names=None)
+        assert "web-crawl" in result
+        assert "freshrss" in result
+
+    def test_bound_empty_list_is_same_as_no_bound(self, two_skill_env):
+        result = build_skills_system_prompt(bound_skill_names=[])
+        assert "web-crawl" in result
+        assert "freshrss" in result
+
+    def test_cache_entries_are_distinct_per_bound(self, two_skill_env):
+        """Different bound_skill_names must not share a cache entry."""
+        r_web = build_skills_system_prompt(bound_skill_names=["web-crawl"])
+        r_all = build_skills_system_prompt()
+        assert "freshrss" not in r_web
+        assert "freshrss" in r_all
+
+
+# =========================================================================
 # Budget warning history stripping
 # =========================================================================
 
