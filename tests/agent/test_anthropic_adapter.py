@@ -29,6 +29,27 @@ from agent.transports import get_transport
 
 
 # ---------------------------------------------------------------------------
+# Module-level fixture: suppress real system credential reads for all tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _no_keychain(monkeypatch):
+    """Patch out the macOS Keychain reader for every test in this module.
+
+    resolve_anthropic_token() calls read_claude_code_credentials(), which
+    first calls _read_claude_code_credentials_from_keychain() via subprocess
+    ('security find-generic-password ...'). On developer machines with a real
+    Claude Code session the subprocess returns a live token, overriding the
+    monkeypatched env vars and Path.home values in every test.
+    """
+    monkeypatch.setattr(
+        "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+        lambda: None,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Auth helpers
 # ---------------------------------------------------------------------------
 

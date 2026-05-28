@@ -42,6 +42,11 @@ def _build_minimal_agent(provider: str = "openrouter", model: str = "gpt-4o"):
         patch("requests.request") as mock_requests_request,
         # Stub out heavy side effects that are not under test
         patch("agent.model_metadata.fetch_model_metadata", return_value={}),
+        # Prevent all network-backed context length probes (models.dev,
+        # OpenRouter /models, Codex /models, Anthropic /models, etc.).
+        # get_model_context_length is not under test here; returning a
+        # plausible value lets init complete without touching the network.
+        patch("agent.context_compressor.get_model_context_length", return_value=128_000),
         patch("hermes_cli.config.load_config", return_value={}),
         patch("hermes_cli.config.save_config"),
         patch("model_tools.get_tool_definitions", return_value=([], [])),
