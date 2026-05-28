@@ -505,6 +505,12 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def connect(self) -> bool:
         """Connect to Slack via Socket Mode."""
+        # Clear any stale "is thinking..." statuses left over from a previous
+        # run or a mid-session socket reconnect.  On cold start _active_status_threads
+        # is empty so this is a no-op; on reconnect it prevents stuck indicators.
+        if self._active_status_threads:
+            await self.clear_all_thinking_statuses()
+
         if not SLACK_AVAILABLE:
             logger.error(
                 "[Slack] slack-bolt not installed. Run: pip install slack-bolt",
@@ -943,6 +949,20 @@ class SlackAdapter(BasePlatformAdapter):
             )
         except Exception as e:
             logger.debug("[Slack] assistant.threads.setStatus clear failed: %s", e)
+
+    async def clear_all_thinking_statuses(self) -> None:
+        """Clear every pending "is thinking..." assistant thread status indicator.
+
+        Called from shutdown/cleanup paths (gateway restart, /stop command with
+        no active agent) where the normal per-turn ``stop_typing()`` call would
+        not fire.  Snapshot the dict before iterating so ``stop_typing()``'s
+        pop does not mutate the collection mid-loop.
+        """
+        for chat_id in list(self._active_status_threads):
+            try:
+                await self.stop_typing(chat_id)
+            except Exception as e:
+                logger.debug("[Slack] clear_all_thinking_statuses error for %s: %s", chat_id, e)
 
     def _dm_top_level_threads_as_sessions(self) -> bool:
         """Whether top-level Slack DMs get per-message session threads.

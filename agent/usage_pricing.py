@@ -412,6 +412,40 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://ai.google.dev/pricing",
         pricing_version="google-pricing-2026-03-16",
     ),
+    # Gemini 3.x — rates from Google's published pricing / OpenRouter passthrough
+    (
+        "google",
+        "gemini-3.5-flash",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.50"),
+        output_cost_per_million=Decimal("9.00"),
+        cache_read_cost_per_million=Decimal("0.15"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-05",
+    ),
+    (
+        "google",
+        "gemini-3.1-flash-lite",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.25"),
+        output_cost_per_million=Decimal("1.50"),
+        cache_read_cost_per_million=Decimal("0.025"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-05",
+    ),
+    (
+        "google",
+        "gemini-3.1-pro-preview",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.00"),
+        output_cost_per_million=Decimal("12.00"),
+        cache_read_cost_per_million=Decimal("0.20"),
+        source="official_docs_snapshot",
+        source_url="https://ai.google.dev/pricing",
+        pricing_version="google-pricing-2026-05",
+    ),
     # AWS Bedrock — pricing per the Bedrock pricing page.
     # Bedrock charges the same per-token rates as the model provider but
     # through AWS billing.  These are the on-demand prices (no commitment).
@@ -548,6 +582,8 @@ def resolve_billing_route(
         return BillingRoute(provider="openai", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"minimax", "minimax-cn"}:
         return BillingRoute(provider=provider_name, model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
+    if provider_name in {"gemini", "google-gemini-cli", "google"}:
+        return BillingRoute(provider=provider_name, model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"custom", "local"} or (base and "localhost" in base):
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=base_url or "", billing_mode="unknown")
     return BillingRoute(provider=provider_name or "unknown", model=model.split("/")[-1] if model else "", base_url=base_url or "", billing_mode="unknown")
@@ -572,15 +608,19 @@ def _normalize_anthropic_model_name(model: str) -> str:
 
 def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]:
     model = route.model.lower()
+    # Alias gemini/google-gemini-cli providers to "google" for pricing table lookup
+    pricing_provider = route.provider
+    if pricing_provider in ("gemini", "google-gemini-cli"):
+        pricing_provider = "google"
     # Direct lookup first
-    entry = _OFFICIAL_DOCS_PRICING.get((route.provider, model))
+    entry = _OFFICIAL_DOCS_PRICING.get((pricing_provider, model))
     if entry:
         return entry
     # Try normalized name for Anthropic (handles dot-notation like opus-4.7)
-    if route.provider == "anthropic":
+    if pricing_provider == "anthropic":
         normalized = _normalize_anthropic_model_name(model)
         if normalized != model:
-            entry = _OFFICIAL_DOCS_PRICING.get((route.provider, normalized))
+            entry = _OFFICIAL_DOCS_PRICING.get((pricing_provider, normalized))
             if entry:
                 return entry
     return None

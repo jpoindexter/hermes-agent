@@ -3177,3 +3177,101 @@ class TestSlashEphemeralAck:
         # the normal single-user case; the ContextVar path is the precise one.
         # The key invariant is: when the ContextVar IS set, it matches exactly.
         assert ctx is not None  # fallback path finds the entry
+
+
+# ---------------------------------------------------------------------------
+# Bug #32295 — clear_all_thinking_statuses clears stuck typing indicators
+# ---------------------------------------------------------------------------
+
+
+class TestClearAllThinkingStatuses:
+    """Regression guard for #32295: Slack "is thinking..." indicator gets stuck
+    when a turn ends without send() being called (crash, /stop, exception).
+    """
+
+    @pytest.mark.asyncio
+    async def test_clear_all_thinking_statuses_calls_setStatus_empty(self, adapter):
+        """clear_all_thinking_statuses() must call assistant_threads_setStatus
+        with status="" for every pending thread, clearing the indicator."""
+        set_status = AsyncMock()
+        adapter._app.client.assistant_threads_setStatus = set_status
+
+        # Simulate two threads where send_typing fired but send() never ran.
+        adapter._active_status_threads["C_ALPHA"] = "ts_alpha"
+        adapter._active_status_threads["C_BETA"] = "ts_beta"
+
+        await adapter.clear_all_thinking_statuses()
+
+        # Both threads must have been cleared.
+        assert set_status.await_count == 2
+        calls = {c.kwargs["thread_ts"] for c in set_status.await_args_list}
+        assert calls == {"ts_alpha", "ts_beta"}
+        for c in set_status.await_args_list:
+            assert c.kwargs["status"] == ""
+
+    @pytest.mark.asyncio
+    async def test_clear_all_thinking_statuses_empties_dict(self, adapter):
+        """After clear_all_thinking_statuses(), _active_status_threads is empty."""
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        adapter._active_status_threads["C1"] = "ts1"
+        adapter._active_status_threads["C2"] = "ts2"
+
+        await adapter.clear_all_thinking_statuses()
+
+        assert adapter._active_status_threads == {}
+
+    @pytest.mark.asyncio
+    async def test_clear_all_thinking_statuses_noop_when_empty(self, adapter):
+        """No API calls when there are no pending status threads."""
+        set_status = AsyncMock()
+        adapter._app.client.assistant_threads_setStatus = set_status
+
+        await adapter.clear_all_thinking_statuses()
+
+        set_status.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_stop_command_no_active_clears_thinking_status(self):
+        """_handle_stop_command with no running agent calls
+        clear_all_thinking_statuses() on the Slack adapter so the typing
+        indicator is cleared even if the agent never sent a reply.
+        """
+        from unittest.mock import MagicMock, AsyncMock, patch
+        from types import SimpleNamespace
+        from gateway.config import Platform, PlatformConfig
+        from gateway.platforms.slack import SlackAdapter
+
+        # Build a minimal adapter with a pending status thread.
+        slack_config = PlatformConfig(enabled=True, token="xoxb-test")
+        slack_adapter = SlackAdapter(slack_config)
+        slack_adapter._app = MagicMock()
+        set_status = AsyncMock()
+        slack_adapter._app.client.assistant_threads_setStatus = set_status
+        slack_adapter._active_status_threads["C_STUCK"] = "ts_stuck"
+
+        # Build a minimal gateway stub that routes _handle_stop_command.
+        # We import GatewayRunner lazily to avoid full bootstrap overhead.
+        import importlib
+        run_mod = importlib.import_module("gateway.run")
+        GatewayRunner = run_mod.GatewayRunner
+
+        gw = object.__new__(GatewayRunner)
+        # Minimal attributes _handle_stop_command reads.
+        gw.session_store = MagicMock()
+        session_entry = MagicMock()
+        session_entry.session_key = "session-abc"
+        gw.session_store.get_or_create_session.return_value = session_entry
+        gw._running_agents = {}  # no active agent
+        gw.adapters = {Platform.SLACK: slack_adapter}
+
+        source = SimpleNamespace(platform=Platform.SLACK, chat_id="C_STUCK")
+        event = SimpleNamespace(source=source)
+
+        # _handle_stop_command should call clear_all_thinking_statuses on the
+        # Slack adapter because there is no running agent (gateway.stop.no_active branch).
+        with patch.object(run_mod, "t", return_value="no active agent"):
+            await gw._handle_stop_command(event)
+
+        set_status.assert_awaited_once()
+        call_kwargs = set_status.await_args.kwargs
+        assert call_kwargs.get("status") == ""

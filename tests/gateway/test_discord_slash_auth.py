@@ -305,6 +305,61 @@ async def test_ignored_channel_wildcard_blocks_all(adapter, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Bug #32263 — config.yaml allowed_channels respected when env var absent
+# ---------------------------------------------------------------------------
+
+
+def test_discord_allowed_channels_reads_config_extra(monkeypatch):
+    """_discord_allowed_channels() must return the config.yaml list when
+    DISCORD_ALLOWED_CHANNELS env var is not set.  This is the regression guard
+    for #32263 — previously the env-var bridge was the only path and any
+    ordering/discovery failure silently allowed ALL channels.
+    """
+    monkeypatch.delenv("DISCORD_ALLOWED_CHANNELS", raising=False)
+    config = PlatformConfig(enabled=True, token="***", extra={"allowed_channels": ["1111", "2222"]})
+    a = DiscordAdapter(config)
+    result = a._discord_allowed_channels()
+    assert result == {"1111", "2222"}
+
+
+def test_discord_allowed_channels_env_takes_precedence(monkeypatch):
+    """Explicit DISCORD_ALLOWED_CHANNELS env var overrides config.yaml value."""
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "9999")
+    config = PlatformConfig(enabled=True, token="***", extra={"allowed_channels": ["1111"]})
+    a = DiscordAdapter(config)
+    result = a._discord_allowed_channels()
+    assert result == {"9999"}
+
+
+def test_discord_allowed_channels_empty_when_neither_set(monkeypatch):
+    """No env var and no config.yaml entry → empty set (no restriction)."""
+    monkeypatch.delenv("DISCORD_ALLOWED_CHANNELS", raising=False)
+    config = PlatformConfig(enabled=True, token="***")
+    a = DiscordAdapter(config)
+    assert a._discord_allowed_channels() == set()
+
+
+@pytest.mark.asyncio
+async def test_slash_auth_uses_config_extra_allowed_channels(monkeypatch):
+    """_check_slash_authorization() blocks channels not in config.yaml
+    allowed_channels even when DISCORD_ALLOWED_CHANNELS env var is absent.
+    Regression guard for #32263.
+    """
+    monkeypatch.delenv("DISCORD_ALLOWED_CHANNELS", raising=False)
+    config = PlatformConfig(enabled=True, token="***", extra={"allowed_channels": ["1111", "2222"]})
+    a = DiscordAdapter(config)
+    a._client = SimpleNamespace(user=SimpleNamespace(id=99999, name="HermesBot"), guilds=[])
+
+    # Channel not in the config whitelist — must be rejected
+    blocked = _make_interaction("100200300", channel_id=9999)
+    assert await a._check_slash_authorization(blocked, "/background hi") is False
+
+    # Channel in the config whitelist — must pass
+    allowed = _make_interaction("100200300", channel_id=1111)
+    assert await a._check_slash_authorization(allowed, "/help") is True
+
+
+# ---------------------------------------------------------------------------
 # Cross-platform admin notification
 # ---------------------------------------------------------------------------
 

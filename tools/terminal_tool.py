@@ -936,6 +936,36 @@ _cleanup_running = False
 _task_env_overrides: Dict[str, Dict[str, Any]] = {}
 
 
+def _env_is_alive(env, probe_timeout: float = 5.0) -> bool:
+    """Probe whether a cached environment is still responsive.
+
+    Runs ``echo __HERMES_PROBE__`` in a daemon thread with a hard wall-clock
+    timeout. Returns True only when the probe command completes within the
+    timeout and the sentinel appears in the output.
+
+    This guards against the 50-65s silent hang (#32460): when a cached env
+    (SSH, Docker, Modal, Daytona) becomes unresponsive between calls, the
+    next ``execute()`` blocks indefinitely on a dead connection or container.
+    A 5s probe detects the dead env fast enough that the caller can evict it
+    and fall through to fresh-environment creation.
+
+    Not called for ``env_type == "local"`` (spawn-per-call, never stale).
+    """
+    result: Dict[str, bool] = {"ok": False}
+
+    def _probe():
+        try:
+            r = env.execute("echo __HERMES_PROBE__", timeout=int(probe_timeout))
+            result["ok"] = "__HERMES_PROBE__" in (r.get("output") or "")
+        except Exception:
+            result["ok"] = False
+
+    t = threading.Thread(target=_probe, daemon=True)
+    t.start()
+    t.join(timeout=probe_timeout)
+    return result["ok"]
+
+
 def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     """
     Register environment overrides for a specific task/rollout.
@@ -1776,6 +1806,29 @@ def terminal_tool(
                 env = _active_environments[effective_task_id]
                 needs_creation = False
             else:
+                needs_creation = True
+
+        # Liveness probe for reused non-local environments (#32460).
+        # Local is spawn-per-call and never goes stale. For SSH, Docker,
+        # Modal, Daytona, and other remote/container backends the cached
+        # env object may become unresponsive between calls (ControlMaster
+        # expired, container stopped externally, etc.).  Without this guard
+        # the next execute() blocks silently for 50-65s until an underlying
+        # OS or network timeout fires.  A 5s probe detects the dead session
+        # fast enough that we can evict and recreate transparently.
+        if not needs_creation and env_type != "local":
+            if not _env_is_alive(env, probe_timeout=5.0):
+                logger.warning(
+                    "Cached %s env for task %s is unresponsive; "
+                    "evicting and creating a fresh environment",
+                    env_type, effective_task_id[:8],
+                )
+                with _env_lock:
+                    _active_environments.pop(effective_task_id, None)
+                try:
+                    env.cleanup()
+                except Exception:
+                    pass
                 needs_creation = True
 
         if needs_creation:

@@ -5,6 +5,7 @@ from agent.usage_pricing import (
     estimate_usage_cost,
     get_pricing_entry,
     normalize_usage,
+    resolve_billing_route,
 )
 
 
@@ -224,3 +225,72 @@ def test_deepseek_v4_pro_estimate_usage_cost():
     assert result.amount_usd is not None
     # 1M input × $1.74/M + 500K output × $3.48/M = $1.74 + $1.74 = $3.48
     assert float(result.amount_usd) == 3.48
+
+
+# ── Gemini direct provider billing route tests (#32400) ──────────────────────
+
+
+def test_resolve_billing_route_gemini_provider_not_unknown():
+    """resolve_billing_route(provider='gemini') must not fall through to unknown.
+
+    Before #32400 fix, gemini and google-gemini-cli had no branch in
+    resolve_billing_route(), so they fell through to billing_mode='unknown'
+    and all cost calculations were skipped.
+    """
+    route = resolve_billing_route("gemini-3.5-flash", provider="gemini")
+
+    assert route.billing_mode != "unknown"
+    assert route.billing_mode == "official_docs_snapshot"
+
+
+def test_resolve_billing_route_google_gemini_cli_not_unknown():
+    route = resolve_billing_route("gemini-3.5-flash", provider="google-gemini-cli")
+
+    assert route.billing_mode != "unknown"
+    assert route.billing_mode == "official_docs_snapshot"
+
+
+def test_gemini_3_5_flash_pricing_entry_exists():
+    """gemini-3.5-flash must resolve a pricing entry for either gemini provider alias."""
+    entry = get_pricing_entry("gemini-3.5-flash", provider="gemini")
+
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 1.50
+    assert float(entry.output_cost_per_million) == 9.00
+    assert float(entry.cache_read_cost_per_million) == 0.15
+
+
+def test_gemini_3_5_flash_cost_calculation_with_known_token_counts():
+    """22K input + 239 output tokens for gemini-3.5-flash must produce cost > 0.
+
+    Regression guard for bug #32400 where direct Gemini sessions always
+    reported $0.00 despite token counts being recorded correctly.
+    Expected:
+      22000 input × $1.50/M  = $0.033
+      239   output × $9.00/M = ~$0.002151
+      total ≈ $0.035151
+    """
+    result = estimate_usage_cost(
+        "gemini-3.5-flash",
+        CanonicalUsage(input_tokens=22000, output_tokens=239),
+        provider="gemini",
+    )
+
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    assert float(result.amount_usd) > 0.0
+    # Loose bounds: should be between $0.03 and $0.04
+    assert 0.03 < float(result.amount_usd) < 0.04
+
+
+def test_gemini_3_5_flash_cost_calculation_google_gemini_cli_provider():
+    """Same token counts via google-gemini-cli provider must also produce cost > 0."""
+    result = estimate_usage_cost(
+        "gemini-3.5-flash",
+        CanonicalUsage(input_tokens=22000, output_tokens=239),
+        provider="google-gemini-cli",
+    )
+
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    assert float(result.amount_usd) > 0.0

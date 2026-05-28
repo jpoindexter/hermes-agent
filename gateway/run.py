@@ -9637,6 +9637,15 @@ class GatewayRunner:
             )
             return EphemeralReply(t("gateway.stop.stopped"))
         else:
+            # No active agent, but a typing indicator may still be showing if
+            # the previous turn called send_typing() and then crashed or was
+            # interrupted before send() cleared it.  Clear it now.
+            adapter = self.adapters.get(source.platform)
+            if adapter and hasattr(adapter, "clear_all_thinking_statuses"):
+                try:
+                    await adapter.clear_all_thinking_statuses()
+                except Exception:
+                    pass
             return t("gateway.stop.no_active")
 
     async def _handle_platform_command(self, event: MessageEvent) -> str:
